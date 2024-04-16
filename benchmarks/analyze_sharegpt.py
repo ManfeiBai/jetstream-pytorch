@@ -43,6 +43,11 @@ system_time_per_decode_token_ms =28.18/96
 # batch size 160, rolling, quantized 
 system_time_per_decode_token_ms =30/160
 
+# llama 70B, batch size 140, ful cache, quantized
+prefill_bucket_size_to_s = {64: 39.106626389548184, 128: 55.79919796437025, 256: 92.47963661327958, 512: 177.37494222819805, 1024: 346.230906015262}
+
+system_time_per_decode_token_ms = 81/140
+
 def do_simulation(prefill_bucket_size_to_ms, system_time_per_decode_token_ms):
 
     def next_power_of_2(x):  
@@ -55,7 +60,7 @@ def do_simulation(prefill_bucket_size_to_ms, system_time_per_decode_token_ms):
 
     convo_numbers = []
     # Please update with your own data file path
-    loaded_share_gpt = json.load(open('~/data/ShareGPT_V3_unfiltered_cleaned_split.json', 'r'))
+    loaded_share_gpt = json.load(open('../../data/ShareGPT_V3_unfiltered_cleaned_split.json', 'r'))
     for example in loaded_share_gpt:
         if len(example['conversations']) < 2:
             continue
@@ -113,3 +118,13 @@ def do_simulation(prefill_bucket_size_to_ms, system_time_per_decode_token_ms):
     print(f"Idealized out tokens {output_tokens} in {idealized_overall_time:.2f} seconds, for {output_tokens/idealized_overall_time:.2f} out tok/s")
     print('prfill', prefill_bucket_size_to_ms)
     print('decode step', system_time_per_decode_token_ms)
+
+
+def main(argv):
+    do_simulation(prefill_bucket_size_to_s, system_time_per_decode_token_ms)
+
+if __name__ == "__main__":
+  import os
+  os.environ["TF_CPP_MIN_LOG_LEVEL"] = "0"
+  from absl import app
+  app.run(main)
