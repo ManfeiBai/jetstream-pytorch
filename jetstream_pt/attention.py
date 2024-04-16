@@ -143,7 +143,6 @@ def ragged_mqa(
   def kv_index_map(b, i, lengths_ref):
     b_next, i_next = _compute_ragged_block_indices(b, i, lengths_ref)
     return b_next, i_next, 0
-
   out, m, l = pl.pallas_call(
       functools.partial(
           ragged_flash_attention_kernel,
@@ -172,9 +171,6 @@ def ragged_mqa(
       ],
   )(lengths, q, k, v)
   return out, (m[..., 0], l[..., 0])
-  """
-  return q, (q[..., 0], q[..., 0])
-  """
 
 def mha_reference(
     q: jax.Array,
