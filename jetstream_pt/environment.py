@@ -55,6 +55,7 @@ class JetEngineEnvironmentData:
 
     # QKV fusion has negative performance on TPU, slicing takes longer
     qkv_fusion: bool = False
+    ragged_mha: bool = False
 
     # If Ture, use bfloat16 as dtype. If False, use float32 as dtype 
     bf16_enable: bool = True
@@ -98,6 +99,7 @@ class JetEngineEnvironment:
         cache_sharding = ("x" if axis == self._data.kv_cache_shard_axis else None
                           for axis in self._data.attention_kv_axis_names)
         self.cache_sharding = jsharding.NamedSharding(self._mesh, P(*cache_sharding))
+        self.ragged_mha = data.ragged_mha
 
     def __getattr__(self, name):
         return getattr(self._data, name)

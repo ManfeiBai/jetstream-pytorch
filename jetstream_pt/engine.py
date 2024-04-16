@@ -84,7 +84,8 @@ class PyTorchEngine(engine_api.Engine):
 
     self.prefill = jax.jit(self.prefill, out_shardings=self.get_prefix_destination_sharding())
     self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
-    self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
+    #/self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
+    self.generate = jax.jit(self.generate, donate_argnums=(1, ))
     # self._insert_wrap = jax.jit(self._insert_wrap, donate_argnums=(0, 1),
     #                              out_shardings=self.get_decode_state_sharding())
 
@@ -149,6 +150,7 @@ class PyTorchEngine(engine_api.Engine):
     cache_scales,
     mask,
     input_pos,
+    lens,
   ):
     if self.env.enable_kv_quantization:
       caches_obj = [
@@ -164,7 +166,7 @@ class PyTorchEngine(engine_api.Engine):
     mask = jnp.expand_dims(mask, (1, 2))
     
     args = (
-      tokens, input_pos, caches_obj, mask 
+      tokens, input_pos, caches_obj, mask, lens
     )
     paramst, argst = torch_xla2.tensor.wrap((weights, args))
     with self._lock:
@@ -435,6 +437,7 @@ class PyTorchEngine(engine_api.Engine):
       decode_state.cache_scales,
       mask,
       decode_state.input_pos,
+      decode_state.lens,
     )
     next_token = self._sampling(logits, self.param.max_batch_size)
     lens = decode_state.lens + 1
@@ -457,7 +460,7 @@ class PyTorchEngine(engine_api.Engine):
         samples_per_slot=1,
     )
 
-    
+    new_caches = jax.lax.with_sharding_constraint(new_caches, self.cache_sharding) 
     new_decode_state = DecodeState(
       next_token, 
       new_caches,
@@ -469,7 +472,6 @@ class PyTorchEngine(engine_api.Engine):
     )
     print('new_pos', (decode_state.current_position + 1) % self.env.cache_sequence_length)
     print('cache_seq_len', self.env.cache_sequence_length)
-
     return new_decode_state, result_tokens
 
 
@@ -596,6 +598,7 @@ def create_pytorch_engine(
     quantize_weights = False,
     quantize_kv = False,
     max_cache_length = 1024,
+    ragged_mha = False,
 ) -> PyTorchEngine:
   """Returns: The pytorch engine."""
 
@@ -638,6 +641,7 @@ def create_pytorch_engine(
     enable_kv_quantization = quantize_kv,
     cache_sequence_length = max_cache_length,
     bf16_enable = bf16_enable,
+    ragged_mha = ragged_mha,
   )
   env = JetEngineEnvironment(env_data)
 

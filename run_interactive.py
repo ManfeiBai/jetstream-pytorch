@@ -52,6 +52,9 @@ _CONTEXT_LENGTH = flags.DEFINE_integer(
 _BATCH_SIZE = flags.DEFINE_integer(
     'batch_size', 32, 'The batch size', required=False
 )
+_RAGGED_MHA =  flags.DEFINE_bool(
+    'ragged_mha', False, 'Whether to enable ragged multi head attention', required=False
+)
 _PROFILING_OUTPUT =flags.DEFINE_string(
     'profiling_output',
     '',
@@ -85,6 +88,7 @@ def create_engine():
         quantize_weights=_QUANTIZE_WEIGHTS.value,
         quantize_kv=_QUANTIZE_KV_CACHE.value,
         max_cache_length = _MAX_CACHE_LENGTH.value,
+        ragged_mha = _RAGGED_MHA.value,
   )
 
   print('Initialize engine', time.perf_counter() - start)

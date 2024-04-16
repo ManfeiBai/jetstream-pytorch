@@ -98,14 +98,16 @@ class TransformerBlock(nn.Module):
       x: torch.Tensor,
       freqs_cis: torch.Tensor,
       mask: Optional[torch.Tensor],
-      cache
+      cache,
+      lengths,
   ):
     with jax.named_scope('Attention'):
       attn = self.attention.forward(
           self.attention_norm(x),
           freqs_cis,
           mask,
-          cache
+          cache,
+          lengths,
       )
     with jax.named_scope('ffn_norm'):
         h = x + attn
@@ -179,6 +181,7 @@ class Transformer(nn.Module):
       input_pos: torch.Tensor,
       caches: List[Any],
       mask,
+      lengths = None,
   ):
     with jax.named_scope('transformer_tok'):
         seqlen = tokens.shape[-1]
@@ -195,7 +198,8 @@ class Transformer(nn.Module):
             h,
             freqs_cis,
             mask,
-            cache
+            cache,
+            lengths,
         )
 
     with jax.named_scope('transformer_norm'):
