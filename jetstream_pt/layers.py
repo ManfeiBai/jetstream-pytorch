@@ -197,7 +197,7 @@ class Attention(nn.Module):
       freqs_cis: torch.Tensor,
       mask: Optional[torch.Tensor],
       cache,
-      lengths = None,
+      input_pos,
   ):
     # bsz, seqlen, _ = x.shape
     with jax.named_scope('attn_linear_before_cache'):
@@ -237,9 +237,9 @@ class Attention(nn.Module):
             #import functools
             #ragged_mha_partial = functools.partial(attention.ragged_mha, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
             #ragged_mha_jit = torch_xla2.extra.call_jax(jax.jit, ragged_mha_partial)
-            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(ragged_mha_partial, xq, keys, values, lengths)
-            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, lengths, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
-            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, lengths)
+            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(ragged_mha_partial, xq, keys, values)
+            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
+            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, input_pos)
             local_sum = torch.unsqueeze(local_sum, -1)
             output = local_output/local_sum
         else:

@@ -230,7 +230,7 @@ out_sharding = P(None, 'x', None)
 replicate1 = P(None,)
 replicate2 = P(None, None,)
 replicate3 = P(None, None, None,)
-input_sharding = (x_sharding, x_sharding, x_sharding, replicate2)
+input_sharding = (x_sharding, x_sharding, x_sharding, replicate1)
 output_sharding = (x_sharding, (out_sharding, out_sharding))
 #@functools.partial(custom_partitioning, static_argnums=(4, 5,))
 #@custom_partitioning

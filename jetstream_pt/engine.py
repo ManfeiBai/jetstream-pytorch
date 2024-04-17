@@ -141,7 +141,6 @@ class PyTorchEngine(engine_api.Engine):
     cache_scales,
     mask,
     input_pos,
-    lens,
   ):
     if self.env.enable_kv_quantization:
       caches_obj = [
@@ -157,7 +156,7 @@ class PyTorchEngine(engine_api.Engine):
     mask = jnp.expand_dims(mask, (1, 2))
     
     args = (
-      tokens, input_pos, caches_obj, mask, lens
+      tokens, input_pos, caches_obj, mask
     )
     paramst, argst = torch_xla2.tensor.wrap((weights, args))
     with self._lock:
@@ -401,7 +400,7 @@ class PyTorchEngine(engine_api.Engine):
     tokens = decode_state.tokens.at[slot].set(prefix.token)
     
     x = jnp.arange(0, self.env.cache_sequence_length)
-    cond = x <= prefix.seq_len
+    cond = x < prefix.seq_len
     mask_insert = jnp.where(cond, 0, float('-inf'))
     mask = decode_state.mask.at[slot].set(mask_insert)
 
@@ -415,7 +414,7 @@ class PyTorchEngine(engine_api.Engine):
           res = jax.lax.dynamic_update_slice(
               cache,
               new_entry,
-              [slot, 0, prefix.seq_len, 0],
+              [slot, 0, 0, 0],
           )
           res = jax.lax.with_sharding_constraint(res, self.cache_sharding)
           return res
@@ -462,7 +461,6 @@ class PyTorchEngine(engine_api.Engine):
       decode_state.cache_scales,
       mask,
       decode_state.input_pos,
-      decode_state.lens,
     )
     next_token = self._sampling(logits, self.param.max_batch_size)
     lens = decode_state.lens + 1
