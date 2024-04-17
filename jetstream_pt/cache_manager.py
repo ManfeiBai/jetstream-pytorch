@@ -79,19 +79,20 @@ class KVCacheGenerate:
     def __init__(self, 
         cache_k: torch.Tensor,  # previous cache
         cache_v: torch.Tensor,  # previous cache
-        position: int,  # position to store the cache
+        position: torch.Tensor,  # position to store the cache
         sharding,
     ):
         super().__init__()
         self.cache_k = cache_k
         self.cache_v = cache_v
         self.pos = position
+        self.batch = torch.arange(position.shape[0])
         self.sharding = sharding
 
     def update(self, key, value):
         keyj, valuej = torch_xla2.tensor.unwrap((key, value))
-        self.cache_k._elem = self.cache_k._elem.at[:, :, self.pos].set(keyj)
-        self.cache_v._elem = self.cache_v._elem.at[:, :, self.pos].set(valuej)
+        self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.pos].set(torch.squeeze(keyj, 2))
+        self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.pos].set(torch.squeeze(valuej, 2))
         return self.cache_k, self.cache_v 
 
     def state(self):
@@ -139,6 +140,7 @@ class Int8KVCacheGenerate:
         self.k_scaler = cache_k_scaler 
         self.v_scaler = cache_v_scaler 
         self.input_pos = input_pos
+        self.batch = torch.arange(input_pos.shape[0])
 
     def state(self):
         return torch_xla2.tensor.unwrap((self.cache_k, self.cache_v))
@@ -168,8 +170,8 @@ class Int8KVCacheGenerate:
     def update(self, xk, xv):
         k_quant, kscale = self.quantize(xk)
         v_quant, vscale = self.quantize(xv)
-        self.cache_k[:, :, self.input_pos, :] = k_quant
-        self.cache_v[:, :, self.input_pos, :] = v_quant
-        self.k_scaler[:, :, self.input_pos, :] = kscale
-        self.v_scaler[:, :, self.input_pos, :] = vscale
+        self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
+        self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
+        self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
+        self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
         return self.cache_k, self.cache_v, self.k_scaler, self.v_scaler
