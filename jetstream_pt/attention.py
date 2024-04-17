@@ -26,7 +26,6 @@ def mqa_reference(
     k: jax.Array,       
     v: jax.Array,       
     lengths: jax.Array, 
-    *,
     mask_value: float = DEFAULT_MASK_VALUE,
 ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
   """Multi query attention reference.
@@ -178,7 +177,6 @@ def mha_reference(
     v: jax.Array,
     layer: jax.Array | None,
     lengths: jax.Array,
-    *,
     logit_cap: float | None = None,
     mask_value: float = DEFAULT_MASK_VALUE,
     out_dtype: jnp.dtype | None = None,
@@ -332,7 +330,6 @@ def dense_attention(
     keys: jax.Array,
     values: jax.Array,
     lengths: jax.Array  = None,
-    *,
     env = None,
     mask = None,
     mask_value: float = DEFAULT_MASK_VALUE,
@@ -372,7 +369,6 @@ def dense_attention_quantized(
     keys: jax.Array,
     values: jax.Array,
     lengths: Optional[jax.Array] = None,
-    *,
     k_scaler = None,
     v_sclaer = None,
     mask = None,
