@@ -142,6 +142,7 @@ def ragged_mqa(
   def kv_index_map(b, i, lengths_ref):
     b_next, i_next = _compute_ragged_block_indices(b, i, lengths_ref)
     return b_next, i_next, 0
+
   out, m, l = pl.pallas_call(
       functools.partial(
           ragged_flash_attention_kernel,

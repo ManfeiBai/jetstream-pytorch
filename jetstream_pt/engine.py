@@ -137,7 +137,6 @@ class PyTorchEngine(engine_api.Engine):
     self, 
     weights, 
     tokens, 
-    input_indexes, 
     caches, 
     cache_scales,
     mask,
@@ -402,7 +401,7 @@ class PyTorchEngine(engine_api.Engine):
     tokens = decode_state.tokens.at[slot].set(prefix.token)
     
     x = jnp.arange(0, self.env.cache_sequence_length)
-    cond = jnp.logical_and(x <= prefix.seq_len, x >= pos)
+    cond = x <= prefix.seq_len
     mask_insert = jnp.where(cond, 0, float('-inf'))
     mask = decode_state.mask.at[slot].set(mask_insert)
 
@@ -411,12 +410,19 @@ class PyTorchEngine(engine_api.Engine):
     input_pos = decode_state.input_pos.at[slot].set(prefix.seq_len)
     
     if not self.env.enable_kv_quantization:
-      jax.tree_map(
-        lambda (new_k, new_v), (k, v): (
-          k = jax.lax.dynamic_update_slice_in_dim(k, new_k, 0, 2), 
-          v = jax.lax.dynamic_update_slice_in_dim(v, new_v, 0, 2)
-        ), 
-      zip(prefix.caches, decode_state.caches)
+      @functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
+      def insert(cache, new_entry):
+          res = jax.lax.dynamic_update_slice(
+              cache,
+              new_entry,
+              [slot, 0, prefix.seq_len, 0],
+          )
+          res = jax.lax.with_sharding_constraint(res, self.cache_sharding)
+          return res
+      caches = [
+        (insert(k, newk), insert(v, newv))
+        for (k, v), (newk, newv) in zip(decode_state.caches, prefix.caches)
+      ]
     else:
       pass
 
@@ -440,19 +446,18 @@ class PyTorchEngine(engine_api.Engine):
     #     prefix,
     #     decode_state,
     # )
-    return _insert_from_beginning(prefix, decode_state, slot)
+    return self._insert_from_beginning(prefix, decode_state, slot)
 
   def generate(
       self, params: Any, decode_state: DecodeState
   ) -> tuple[DecodeState, engine_api.ResultTokens]:
     # fill mask first
     # [bsz, seqlen]
-    batch = jnp.arange(mask.shape[0])
+    batch = jnp.arange(decode_state.mask.shape[0])
     mask = decode_state.mask.at[batch, decode_state.input_pos].set(0)
     logits, new_caches, new_scales = self._call_model_generate(
       params, 
       decode_state.tokens, 
-      input_indexes, 
       decode_state.caches, 
       decode_state.cache_scales,
       mask,

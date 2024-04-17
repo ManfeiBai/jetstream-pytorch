@@ -85,14 +85,16 @@ class KVCacheGenerate:
         super().__init__()
         self.cache_k = cache_k
         self.cache_v = cache_v
-        self.pos = position
-        self.batch = torch.arange(position.shape[0])
+        self.pos = torch_xla2.tensor.unwrap(position)
+        self.batch = jnp.arange(position.shape[0])
         self.sharding = sharding
 
     def update(self, key, value):
-        keyj, valuej = torch_xla2.tensor.unwrap((key, value))
-        self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.pos].set(torch.squeeze(keyj, 2))
-        self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.pos].set(torch.squeeze(valuej, 2))
+        keyj = torch.squeeze(key, 2)
+        valuej = torch.squeeze(value, 2)
+        keyj, valuej = torch_xla2.tensor.unwrap((keyj, valuej))
+        self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.pos].set(keyj)
+        self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.pos].set(valuej)
         return self.cache_k, self.cache_v 
 
     def state(self):
@@ -104,8 +106,8 @@ class KVCacheGenerate:
         k = jnp.zeros(shape, device=device, dtype=default_dtype)
         v = jnp.zeros(shape, device=device, dtype=default_dtype)
         k, v = torch_xla2.tensor.wrap((k, v))
-        pos = jnp.array([0])  # replicated
-        return cls(k, v, 0, device)
+        pos = jnp.zeros((shape[0]))  # replicated
+        return cls(k, v, pos, device)
 
 def KVCacheGenerate_flatten(cache):
     return torch_xla2.tensor.unwrap((cache.cache_k, cache.cache_v)), (cache.pos, cache.sharding)
@@ -170,8 +172,8 @@ class Int8KVCacheGenerate:
     def update(self, xk, xv):
         k_quant, kscale = self.quantize(xk)
         v_quant, vscale = self.quantize(xv)
-        self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
-        self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
-        self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
-        self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
+        self.cache_k[self.batch, :, self.input_pos, :] = jnp.squeeze(k_quant, 2)
+        self.cache_v[self.batch, :, self.input_pos, :] = jnp.squeeze(v_quant, 2)
+        self.k_scaler[self.batch, :, self.input_pos, :] = jnp.squeeze(kscale, 2)
+        self.v_scaler[self.batch, :, self.input_pos, :] = jnp.squeeze(vscale, 2)
         return self.cache_k, self.cache_v, self.k_scaler, self.v_scaler

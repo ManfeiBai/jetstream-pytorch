@@ -234,7 +234,7 @@ class Attention(nn.Module):
         if self.env.ragged_mha and seqlen == 1:
             #print('YY', xq.shape, keys.shape, values.shape)
             xq = xq.transpose(1, 2)
-            import functools
+            #import functools
             #ragged_mha_partial = functools.partial(attention.ragged_mha, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
             #ragged_mha_jit = torch_xla2.extra.call_jax(jax.jit, ragged_mha_partial)
             #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(ragged_mha_partial, xq, keys, values, lengths)
