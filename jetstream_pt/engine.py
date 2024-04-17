@@ -84,15 +84,7 @@ class PyTorchEngine(engine_api.Engine):
 
     self.prefill = jax.jit(self.prefill, out_shardings=self.get_prefix_destination_sharding())
     self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
-    #/self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
-    self.generate = jax.jit(self.generate, donate_argnums=(1, ))
-    # self._insert_wrap = jax.jit(self._insert_wrap, donate_argnums=(0, 1),
-    #                              out_shardings=self.get_decode_state_sharding())
-
-    # self._insert_no_wrap = jax.jit(
-    #      self._insert_no_wrap, 
-    #      donate_argnums=(0, 1), 
-    #      out_shardings=self.get_decode_state_sharding())
+    self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
     self._lock = threading.RLock()
 
   def sharding_by_name(self, name):
@@ -155,13 +147,13 @@ class PyTorchEngine(engine_api.Engine):
     if self.env.enable_kv_quantization:
       caches_obj = [
         cache_manager.Int8KVCacheGenerate(
-          k, v, ks, vs, input_indexes) for (k, v), (ks, vs) 
+          k, v, ks, vs, input_pos) for (k, v), (ks, vs) 
           in torch_xla2.tensor.wrap(list(zip(caches, cache_scales)))
       ]
     else:
       caches_obj = [
         cache_manager.KVCacheGenerate(
-          k, v, input_indexes, self.cache_sharding) for k, v in torch_xla2.tensor.wrap(caches)
+          k, v, input_pos, self.cache_sharding) for k, v in torch_xla2.tensor.wrap(caches)
       ]
     mask = jnp.expand_dims(mask, (1, 2))
     
@@ -401,6 +393,42 @@ class PyTorchEngine(engine_api.Engine):
       input_pos,
       mask)
 
+  def _insert_from_beginning(
+    self,
+    prefix: Prefix,
+    decode_state: DecodeState,
+    slot: int,
+  ):
+    tokens = decode_state.tokens.at[slot].set(prefix.token)
+    
+    x = jnp.arange(0, self.env.cache_sequence_length)
+    cond = jnp.logical_and(x <= prefix.seq_len, x >= pos)
+    mask_insert = jnp.where(cond, 0, float('-inf'))
+    mask = decode_state.mask.at[slot].set(mask_insert)
+
+    scales = []
+    lens = decode_state.lens.at[slot].set(1)
+    input_pos = decode_state.input_pos.at[slot].set(prefix.seq_len)
+    
+    if not self.env.enable_kv_quantization:
+      jax.tree_map(
+        lambda (new_k, new_v), (k, v): (
+          k = jax.lax.dynamic_update_slice_in_dim(k, new_k, 0, 2), 
+          v = jax.lax.dynamic_update_slice_in_dim(v, new_v, 0, 2)
+        ), 
+      zip(prefix.caches, decode_state.caches)
+    else:
+      pass
+
+    return DecodeState(
+      tokens, 
+      decode_state.caches, 
+      scales, 
+      decode_state.current_position, 
+      lens, 
+      input_pos,
+      mask)
+    
   def insert(
       self,
       prefix: Prefix,
@@ -412,23 +440,15 @@ class PyTorchEngine(engine_api.Engine):
     #     prefix,
     #     decode_state,
     # )
-    start_insert = decode_state.current_position - prefix.seq_len
-    end_insert = start_insert + prefix.caches[0][0].shape[2] # padded seclen
-    return jax.lax.cond(
-        jnp.logical_and(start_insert >= 0, end_insert < self.env.cache_sequence_length),
-        self._insert_no_wrap,
-        self._insert_wrap,
-        prefix, decode_state, slot)
+    return _insert_from_beginning(prefix, decode_state, slot)
 
   def generate(
       self, params: Any, decode_state: DecodeState
   ) -> tuple[DecodeState, engine_api.ResultTokens]:
-    #seq_len = padded_tokens.shape[0]
-    pos = decode_state.current_position
-    input_indexes = jnp.full((1,), pos) 
-
     # fill mask first
-    mask = decode_state.mask.at[:, decode_state.current_position].set(0)
+    # [bsz, seqlen]
+    batch = jnp.arange(mask.shape[0])
+    mask = decode_state.mask.at[batch, decode_state.input_pos].set(0)
     logits, new_caches, new_scales = self._call_model_generate(
       params, 
       decode_state.tokens, 
@@ -471,6 +491,7 @@ class PyTorchEngine(engine_api.Engine):
       mask,
     )
     print('new_pos', (decode_state.current_position + 1) % self.env.cache_sequence_length)
+    print('input_pos', (decode_state.input_pos))
     print('cache_seq_len', self.env.cache_sequence_length)
     return new_decode_state, result_tokens
 
