@@ -26,10 +26,12 @@ from jetstream_pt import environment
 
 
 import unittest
+#os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 class LlamaE2ETest(unittest.TestCase):
 
     def setup(self):
+        jax.config.update('jax_platform_name', 'cpu')
         torch.set_default_dtype(torch.bfloat16)
 
     def _to_jax(self, tree):
@@ -42,8 +44,8 @@ class LlamaE2ETest(unittest.TestCase):
         torch.set_default_dtype(torch_dtype)
         jax.config.update('jax_dynamic_shapes', False)
         jax.config.update('jax_traceback_filtering', 'off')
+        jax.config.update('jax_platform_name', 'cpu')
         env_data = environment.JetEngineEnvironmentData()
-        env_data.max_input_sequence_length = 128
         env_data.max_input_sequence_length = 128
         env_data.cache_sequence_length = 128
         env_data.model_type = 'llama-2-tiny'
@@ -75,9 +77,9 @@ class LlamaE2ETest(unittest.TestCase):
             print(f"------------------- index: {index}, tokens:{output_tokens}")
             if index > 0:
                 self.assertNotEqual(output_tokens_multiple[index], output_tokens_multiple[index - 1])
-
     def test_jetstream_llama2_seed(self):
         jax.config.update('jax_platform_name', 'cpu')
+      #with jax.default_device(jax.devices("cpu")[0]):
         x = jnp.square(2)
         print(f"---------> {jax.devices()}")
 
@@ -144,10 +146,15 @@ class LlamaE2ETest(unittest.TestCase):
                 self.assertEqual(output_tokens_multiple[index], output_tokens_multiple[index - 1])
 
     def _llama_e2e(self, env):
+        jax.config.update('jax_platform_name', 'cpu')
+        token_true_len = 16
+        env.seq_len = token_true_len
         model_arg = env._model_arg 
-        tokens = np.arange(10, dtype=np.int32)
+        #tokens = np.arange(10, dtype=np.int32)
+        tokens = np.arange(token_true_len, dtype=np.int32)
         true_length = tokens.shape[-1]
-        padded_tokens = np.pad(tokens, (0, 6))
+        padded_tokens = tokens
+        #padded_tokens = np.pad(tokens, (0, 6))
         padded_tokens = jnp.array(padded_tokens)
 
         seed = 1
@@ -160,7 +167,7 @@ class LlamaE2ETest(unittest.TestCase):
         # orginal
         llama_original = LlamaOriginal.build(tokenizer_path, model_arg, seed)
         prompt_tokens = [tokens]
-        expected_output_tokens = llama_original.generate(prompt_tokens, max_output_length)
+        expected_output_tokens, logits_all = llama_original.generate(prompt_tokens, max_output_length)
 
 
         model_orig = llama_original.model
@@ -180,17 +187,29 @@ class LlamaE2ETest(unittest.TestCase):
         decode_state = engine.init_decode_state()
         slot = 0 
 
-        prefill_result = engine.prefill(
+        prefill_result, prefill_logits = engine.prefill(
             params=params, padded_tokens=padded_tokens, true_length=true_length
         )
-
-        decode_state = engine.insert(
+        from jetstream_pt import engine as e
+        decode_state = e.DecodeState(decode_state.tokens, decode_state.caches, decode_state.cache_scales, prefill_result.seq_len, decode_state.lens, decode_state.input_pos, decode_state.mask)
+        prefill_logits = torch_xla2.tensor.wrap(prefill_logits)
+        #self.assertAlmostEqual(prefill_logits, logits_all[0], places=3) 
+        np.testing.assert_allclose(prefill_logits, torch.squeeze(logits_all[0], 0), atol=1e-3)
+        decode_state_new_insert = engine.insert(
             prefill_result, decode_state, slot=slot
         )
-
+        decode_state_no_wrap = engine._insert_no_wrap(prefill_result, decode_state, slot=slot)
+        print(f"Decode state for the original insert: {decode_state_no_wrap}, new insert: {decode_state_new_insert}")
+        jax.tree_map(lambda original_insert_elem, new_insert_elem: np.testing.assert_allclose(original_insert_elem, new_insert_elem, rtol=1e1, atol=1e-3), decode_state_no_wrap.caches, decode_state_new_insert.caches)
+        np.testing.assert_allclose(decode_state_no_wrap.input_pos,  decode_state_new_insert.input_pos, rtol=1e1,atol=1e-3)
+        np.testing.assert_allclose(decode_state_no_wrap.mask,  decode_state_new_insert.mask, rtol=1e1,atol=1e-3)
         out_tokens = []
+        step = 1
+        decode_state = decode_state_new_insert
         while True:
-            decode_state, result_tokens = engine.generate(params, decode_state)
+            decode_state, result_tokens, decode_logits = engine.generate(params, decode_state)
+            #np.testing.assert_allclose(jnp.squeeze(decode_logits), torch.squeeze(logits_all[step]), atol=1e-3, err_msg=f"step: {step}")
+            step = step + 1
             slot_data = result_tokens.get_result_at_slot(slot)
             slot_tokens = slot_data.tokens
             slot_lengths = slot_data.lengths
@@ -207,6 +226,8 @@ class LlamaE2ETest(unittest.TestCase):
 
         env = self._make_env(bf16_enable=False)
         out_tokens ,expected_output_tokens = self._llama_e2e(env)
+        print(f"------------------- actual: {out_tokens}")
+        print(f"------------------- expcted:{expected_output_tokens}")
         self.assertEqual(out_tokens ,expected_output_tokens)
 
 
@@ -356,6 +377,7 @@ class LlamaE2ETest(unittest.TestCase):
         # self.assertEqual(out_tokens ,expected_output_tokens)        
 
 if __name__ == '__main__':
+    #os.environ["JAX_PLATFORM_NAME"] = "cpu"
     unittest.main()
 
 

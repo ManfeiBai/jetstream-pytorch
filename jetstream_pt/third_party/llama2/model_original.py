@@ -475,9 +475,10 @@ class Transformer(nn.Module):
                 torch.zeros((seqlen, start_pos), device=tokens.device),
                 mask
             ]).type_as(h)
-
+        caches_k = []
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
+            caches_k.append(layer.attention.cache_k)
         h = self.norm(h)
         output = self.output(h).float()
-        return output
+        return output #, caches_k

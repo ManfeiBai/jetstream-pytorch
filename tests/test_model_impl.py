@@ -76,13 +76,13 @@ class ModelComponentTest(unittest.TestCase):
         env.apply_sharding = lambda *args, **kwargs: None  # don't shard on cpu
         return env
 
+
     def _call_xla_model(self, model, weights, args):
-        with jax.default_device(jax.devices('cpu')[0]):
-            xla_weights, xla_inputs = self._to_xla_tensor(
-                (weights, args)) 
-            result = torch.func.functional_call(model, xla_weights, xla_inputs)
-            result_torch = torch_xla2.tensor.j2t(result._elem)
-            return result_torch
+        xla_weights, xla_inputs = self._to_xla_tensor(
+                (weights, args))
+        result = torch.func.functional_call(model, xla_weights, xla_inputs)
+        result_torch = torch_xla2.tensor.j2t(result._elem)
+        return result_torch
 
     def _generate_mask(self, cache_length, pos, seqlen):
         x = jnp.arange(0, cache_length)
@@ -128,11 +128,13 @@ class ModelComponentTest(unittest.TestCase):
 
         cache = cache_manager.KVCachePrefill()
         freqs_cis = freqs_cis.reshape(batch, seqlen, -1)
+        input_pos = torch.zeros((batch))
         input_ours = (
             x,
             freqs_cis,
             mask,
             cache,
+            input_pos,  # For ragged attention only
         )
 
         result_torch = self._call_xla_model(
@@ -143,7 +145,8 @@ class ModelComponentTest(unittest.TestCase):
 
 
         pos = 32  # 
-        cache_decode = self._make_one_cache_for_generate(env, pos)
+        input_pos = torch.tensor([32])
+        cache_decode = self._make_one_cache_for_generate(env, input_pos)
 
         # insert prefilled cache entry
         cache_decode.cache_k._elem = cache_decode.cache_k._elem.at[:, :, :pos, :].set(cache.cache_k._elem)
@@ -168,13 +171,22 @@ class ModelComponentTest(unittest.TestCase):
             x2,
             freqs_cis,
             mask,
-            cache_decode
+            cache_decode,
+            input_pos,
         )
         result_torch = self._call_xla_model(
             attention_ours, attention_orig.state_dict(), input_ours2)
 
+        env.ragged_mha = True
+        attention_ragged_mha = layers.Attention(model_arg, env) 
+
         print('Single Attention: decode diff norm', (result_torch - expected_out).norm())
         self.assertTrue(torch.allclose(result_torch, expected_out, atol=1e-4))
+        
+        # Cannot enable ragged attention kernel cuz it requires TPU
+        #result_torch_ragged_mha = self._call_xla_model(attention_ragged_mha, attention_orig.state_dict(), input_ours2, device = 'tpu')
+        #print('Single Ragged Attention: decode diff norm', (result_torch_ragged_mha - expected_out).norm())
+        #self.assertTrue(torch.allclose(result_torch_ragged_mha, expected_out, atol=1e-2))
 
     def test_transformer_block(self):
         env = self._make_env()
@@ -193,7 +205,7 @@ class ModelComponentTest(unittest.TestCase):
             x,
             start_pos,
             freqs_cis,
-            mask
+            mask,
         )
 
         expected_out = block_orig(*inputs_orig)
@@ -205,6 +217,7 @@ class ModelComponentTest(unittest.TestCase):
             freqs_cis,
             mask,
             cache,
+            None,  # Input position, ragged attention only
         )
 
         result_torch = self._call_xla_model(
@@ -215,7 +228,8 @@ class ModelComponentTest(unittest.TestCase):
 
 
         pos = 32  # 
-        cache_decode = self._make_one_cache_for_generate(env, pos)
+        input_pos = torch.tensor([32])
+        cache_decode = self._make_one_cache_for_generate(env, input_pos)
 
         # insert prefilled cache entry
         cache_decode.cache_k._elem = cache_decode.cache_k._elem.at[:, :, :pos, :].set(cache.cache_k._elem)
@@ -239,7 +253,8 @@ class ModelComponentTest(unittest.TestCase):
             x2,
             freqs_cis,
             mask,
-            cache_decode
+            cache_decode,
+            None,  # Input position, ragged attention only
         )
         result_torch = self._call_xla_model(
             block_ours, block_orig.state_dict(), input_ours2)

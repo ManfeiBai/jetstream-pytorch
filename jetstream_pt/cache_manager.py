@@ -85,8 +85,12 @@ class KVCacheGenerate:
         super().__init__()
         self.cache_k = cache_k
         self.cache_v = cache_v
-        self.pos = torch_xla2.tensor.unwrap(position)
-        self.batch = jnp.arange(position.shape[0])
+        self.pos = position
+        if len(position.shape) > 1:
+            self.pos = torch.squeeze(self.pos, 1)
+        assert len(position.shape) == 1
+        self.pos = torch_xla2.tensor.unwrap(self.pos)
+        self.batch = jnp.arange(self.pos.shape[0])
         self.sharding = sharding
 
     def update(self, key, value):

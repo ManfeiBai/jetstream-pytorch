@@ -20,7 +20,7 @@ from jax.sharding import PartitionSpec as P
 DEFAULT_MASK_VALUE = -0.7 * float(np.finfo(np.dtype("float32")).max)
 
 
-@functools.partial(jax.jit, static_argnames=["mask_value"])
+#@functools.partial(jax.jit, static_argnames=["mask_value"])
 def mqa_reference(
     q: jax.Array,       
     k: jax.Array,       
@@ -219,6 +219,7 @@ def mha_reference(
                   in_axes=(1, kv_head_axis, kv_head_axis, None),
                   out_axes=1)(q, k, v, lengths)
 
+"""
 from jax.sharding import Mesh, PartitionSpec as P
 from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
@@ -235,6 +236,7 @@ output_sharding = (x_sharding, (out_sharding, out_sharding))
 #@functools.partial(custom_partitioning, static_argnums=(4, 5,))
 #@custom_partitioning
 @functools.partial(shard_map, mesh=mesh, in_specs=input_sharding, out_specs=output_sharding, check_rep=False)
+"""
 def ragged_mha(
     q: jax.Array,
     k: jax.Array,

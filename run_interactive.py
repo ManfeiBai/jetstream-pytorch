@@ -29,7 +29,7 @@ from jetstream_pt import engine as je
 import time
 
 
-logging.getLogger().setLevel(logging.ERROR)
+#logging.getLogger().setLevel(logging.ERROR)
 
 
 FLAGS = flags.FLAGS

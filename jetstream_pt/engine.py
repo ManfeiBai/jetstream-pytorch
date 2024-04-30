@@ -83,8 +83,10 @@ class PyTorchEngine(engine_api.Engine):
     self.cache_sharding = self.y_sharding
 
     self.prefill = jax.jit(self.prefill, out_shardings=self.get_prefix_destination_sharding())
-    self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
-    self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
+    #self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
+    self.insert = jax.jit(self.insert, out_shardings=self.get_decode_state_sharding())
+    #self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
+    self.generate = jax.jit(self.generate, out_shardings=(self.get_decode_state_sharding(), None, None))
     self._lock = threading.RLock()
 
   def sharding_by_name(self, name):
@@ -207,7 +209,7 @@ class PyTorchEngine(engine_api.Engine):
       existing_prefix: Optional[Prefix] = None,
       padded_tokens: PrefillInputs,  # PrefillInputs[jax.Array],
       true_length: int
-  ) -> Prefix:
+  ) -> tuple[Prefix, Any]:
     if isinstance(padded_tokens, jax.Array):
       batched_token = padded_tokens.reshape(1, -1)
     else:
@@ -235,7 +237,7 @@ class PyTorchEngine(engine_api.Engine):
     #       v, seq_len - true_length, true_length, axis=2))
     #   for k, v in updated_caches
     # ]
-    return Prefix(token, updated_caches, true_length) 
+    return Prefix(token, updated_caches, true_length), logits 
 
   def shrink_prefix(
       self,
@@ -261,7 +263,7 @@ class PyTorchEngine(engine_api.Engine):
     mask = decode_state.mask.at[slot].set(mask_insert)
     input_pos = decode_state.input_pos.at[slot].set(prefix.seq_len)
     if not self.env.enable_kv_quantization:
-      @functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
+      #@functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
       def insert(cache, new_entry):
           res = jax.lax.dynamic_update_slice(
               cache,
@@ -400,16 +402,17 @@ class PyTorchEngine(engine_api.Engine):
     tokens = decode_state.tokens.at[slot].set(prefix.token)
     
     x = jnp.arange(0, self.env.cache_sequence_length)
-    cond = x < prefix.seq_len
+    cond = x <= prefix.seq_len
     mask_insert = jnp.where(cond, 0, float('-inf'))
     mask = decode_state.mask.at[slot].set(mask_insert)
 
     scales = []
     lens = decode_state.lens.at[slot].set(1)
     input_pos = decode_state.input_pos.at[slot].set(prefix.seq_len)
-    
+   
+    caches = []
     if not self.env.enable_kv_quantization:
-      @functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
+      #@functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
       def insert(cache, new_entry):
           res = jax.lax.dynamic_update_slice(
               cache,
@@ -427,7 +430,7 @@ class PyTorchEngine(engine_api.Engine):
 
     return DecodeState(
       tokens, 
-      decode_state.caches, 
+      caches, 
       scales, 
       decode_state.current_position, 
       lens, 
@@ -449,7 +452,7 @@ class PyTorchEngine(engine_api.Engine):
 
   def generate(
       self, params: Any, decode_state: DecodeState
-  ) -> tuple[DecodeState, engine_api.ResultTokens]:
+  ) -> tuple[DecodeState, engine_api.ResultTokens, Any]:
     # fill mask first
     # [bsz, seqlen]
     batch = jnp.arange(decode_state.mask.shape[0])
@@ -496,7 +499,7 @@ class PyTorchEngine(engine_api.Engine):
     print('new_pos', (decode_state.current_position + 1) % self.env.cache_sequence_length)
     print('input_pos', (decode_state.input_pos))
     print('cache_seq_len', self.env.cache_sequence_length)
-    return new_decode_state, result_tokens
+    return new_decode_state, result_tokens, logits
 
 
   def get_tokenizer(self) -> tokenizer_pb2.TokenizerParameters:
@@ -561,13 +564,13 @@ class PyTorchEngine(engine_api.Engine):
   def colocated_cpus(self) -> Union[list[engine_api.CpuDevices], None]:
     return jax.devices('cpu')[0]
 
-  def get_prefix_destination_sharding(self) -> Prefix:
+  def get_prefix_destination_sharding(self) -> tuple[Prefix, Any]:
     """Returns the shardings necessary to transfer data between engines."""
     return Prefix(
         self.replicated,
         self.cache_sharding,
         self.replicated,
-    )
+    ), self.replicated
 
   def get_decode_state_sharding(self) -> DecodeState:
     """Gets the shardings corresponding to the decode state."""

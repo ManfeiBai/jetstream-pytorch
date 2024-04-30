@@ -118,7 +118,7 @@ class LlamaOriginal:
                 toks = toks[:eos_idx]
             out_tokens.append(toks)
             out_logprobs.append(probs)
-        return out_tokens
+        return out_tokens, logits
 
     @torch.inference_mode()
     def generate(
@@ -148,9 +148,10 @@ class LlamaOriginal:
         prev_pos = 0
         eos_reached = torch.tensor([False] * bsz, device="cpu")
         input_text_mask = tokens != pad_id
-
+        logits_all = []
         for cur_pos in range(min_prompt_len, total_len):
             logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            logits_all.append(logits)
             next_token = torch.argmax(logits[:, -1], dim=-1)
 
             next_token = next_token.reshape(-1)
@@ -178,7 +179,7 @@ class LlamaOriginal:
                 toks = toks[:eos_idx]
             out_tokens.append(toks)
             out_logprobs.append(probs)
-        return out_tokens
+        return out_tokens, logits_all
 
     def text_completion(
         self,
