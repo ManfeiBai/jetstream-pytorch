@@ -49,7 +49,7 @@ class LlamaE2ETest(unittest.TestCase):
         env_data.max_input_sequence_length = 128
         env_data.cache_sequence_length = 128
         env_data.model_type = 'llama-2-tiny'
-        env_data.batch_size = 1
+        env_data.batch_size = 2 
         env_data.bf16_enable = bf16_enable
         env = environment.JetEngineEnvironment(env_data)
         env.apply_sharding = lambda *args, **kwargs: None  # don't shard on cpu
@@ -187,29 +187,25 @@ class LlamaE2ETest(unittest.TestCase):
         decode_state = engine.init_decode_state()
         slot = 0 
 
-        prefill_result, prefill_logits = engine.prefill(
+        #prefill_result, prefill_logits
+        prefill_result = engine.prefill(
             params=params, padded_tokens=padded_tokens, true_length=true_length
         )
         from jetstream_pt import engine as e
         decode_state = e.DecodeState(decode_state.tokens, decode_state.caches, decode_state.cache_scales, prefill_result.seq_len, decode_state.lens, decode_state.input_pos, decode_state.mask)
-        prefill_logits = torch_xla2.tensor.wrap(prefill_logits)
+        decode_state = engine.insert(
+                prefill_result, decode_state, slot=slot
+            )
+        #prefill_logits = torch_xla2.tensor.wrap(prefill_logits)
         #self.assertAlmostEqual(prefill_logits, logits_all[0], places=3) 
-        np.testing.assert_allclose(prefill_logits, torch.squeeze(logits_all[0], 0), atol=1e-3)
-        decode_state_new_insert = engine.insert(
-            prefill_result, decode_state, slot=slot
-        )
-        decode_state_no_wrap = engine._insert_no_wrap(prefill_result, decode_state, slot=slot)
-        print(f"Decode state for the original insert: {decode_state_no_wrap}, new insert: {decode_state_new_insert}")
-        jax.tree_map(lambda original_insert_elem, new_insert_elem: np.testing.assert_allclose(original_insert_elem, new_insert_elem, rtol=1e1, atol=1e-3), decode_state_no_wrap.caches, decode_state_new_insert.caches)
-        np.testing.assert_allclose(decode_state_no_wrap.input_pos,  decode_state_new_insert.input_pos, rtol=1e1,atol=1e-3)
-        np.testing.assert_allclose(decode_state_no_wrap.mask,  decode_state_new_insert.mask, rtol=1e1,atol=1e-3)
+        #np.testing.assert_allclose(prefill_logits, torch.squeeze(logits_all[0], 0), atol=1e-3)
         out_tokens = []
         step = 1
-        decode_state = decode_state_new_insert
         while True:
-            decode_state, result_tokens, decode_logits = engine.generate(params, decode_state)
+            #decode_state, result_tokens, decode_logits
+            decode_state, result_tokens = engine.generate(params, decode_state)
             #np.testing.assert_allclose(jnp.squeeze(decode_logits), torch.squeeze(logits_all[step]), atol=1e-3, err_msg=f"step: {step}")
-            step = step + 1
+            #step = step + 1
             slot_data = result_tokens.get_result_at_slot(slot)
             slot_tokens = slot_data.tokens
             slot_lengths = slot_data.lengths

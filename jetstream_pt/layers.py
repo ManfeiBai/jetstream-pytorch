@@ -183,6 +183,20 @@ class Attention(nn.Module):
           bias=False,
           device=args.device,
       )
+    from jax.sharding import PartitionSpec
+    q_sharding = PartitionSpec(None, 'x')
+    k_sharding = q_sharding
+    v_sharding = q_sharding
+    len_sharding = PartitionSpec()
+    output_sharding = q_sharding
+    max_sharding = q_sharding
+    sum_sharding = q_sharding
+    import functools
+    from jax.experimental.shard_map import shard_map
+    #binded_ragged_mha = torch_xla2.extra.call_jax(shard_map, attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, self.env.replicated), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    #binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding, len_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    self.binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    self.binded_ragged_mha_quantized = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding, len_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
 
   def load_hook(self, state_dict, prefix, *args):
       if prefix + "wq.weight" in state_dict:
@@ -233,15 +247,13 @@ class Attention(nn.Module):
       with jax.named_scope('attn_apply'):
         if self.env.ragged_mha and seqlen == 1:
             #print('YY', xq.shape, keys.shape, values.shape)
+            #output = attention.dense_attention(xq, keys, values, env=self.env, mask=mask,)
             xq = xq.transpose(1, 2)
-            #import functools
-            #ragged_mha_partial = functools.partial(attention.ragged_mha, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
-            #ragged_mha_jit = torch_xla2.extra.call_jax(jax.jit, ragged_mha_partial)
-            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(ragged_mha_partial, xq, keys, values)
-            #local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, bk=256, mask_value=attention.DEFAULT_MASK_VALUE)
-            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(attention.ragged_mha, xq, keys, values, input_pos)
-            local_sum = torch.unsqueeze(local_sum, -1)
-            output = local_output/local_sum
+            #binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(self.binded_ragged_mha, xq, keys, values, input_pos) #, None, None)
+            #local_sum = torch.unsqueeze(local_sum, -1)
+            #output = local_output/local_sum
+            output = local_output
         else:
             output = attention.dense_attention(xq, keys, values, env=self.env, mask=mask,)
     else:
@@ -252,7 +264,13 @@ class Attention(nn.Module):
         keys = repeat_kv(keys, self.n_rep)
         values = repeat_kv(values, self.n_rep)
       with jax.named_scope('attn_apply'):
-        output = attention.dense_attention_quantized(xq, keys, values, env=self.env, mask=mask, k_scaler=k_scaler, v_scaler=v_scaler)
+        if self.env.ragged_mha and seqlen == 1:
+            xq = xq.transpose(1, 2)
+            k_scaler = torch.squeeze(k_scaler, -1)
+            v_scaler = torch.squeeze(v_scaler, -1)
+            output, (_, _) = torch_xla2.extra.call_jax(self.binded_ragged_mha_quantized, xq, keys, values, input_pos, k_scaler, v_scaler)
+        else:
+            output = attention.dense_attention_quantized(xq, keys, values, env=self.env, mask=mask, k_scaler=k_scaler, v_scaler=v_scaler)
 
     output = output.transpose(-3, -2).contiguous().view(bsz, seqlen, -1)
     self.env.apply_sharding(output, axis=2)

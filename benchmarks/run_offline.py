@@ -61,6 +61,9 @@ _QUANTIZE_WEIGHTS = flags.DEFINE_bool('quantize_weights', False, 'weight quantiz
 _QUANTIZE_KV_CACHE = flags.DEFINE_bool('quantize_kv_cache', False, 'kv_cache_quantize')
 _MAX_CACHE_LENGTH = flags.DEFINE_integer('max_cache_length', 1024, 'kv_cache_quantize')
 
+_RAGGED_MHA =  flags.DEFINE_bool(
+    'ragged_mha', False, 'Whether to enable ragged multi head attention', required=False
+)
 
 def create_engine():
   jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
@@ -81,7 +84,8 @@ def create_engine():
         quantize_weights=_QUANTIZE_WEIGHTS.value,
         quantize_kv=_QUANTIZE_KV_CACHE.value,
         max_cache_length = _MAX_CACHE_LENGTH.value,
-  )
+        ragged_mha = _RAGGED_MHA.value,
+        )
 
   print('Initialize engine', time.perf_counter() - start)
   return engine
@@ -132,13 +136,16 @@ def main(argv):
   prefill_times = {}
   slot = jnp.int32(1)
 
-  if _PROFILING_OUTPUT.value:
-    jax.profiler.start_trace(_PROFILING_OUTPUT.value)
+  #if _PROFILING_OUTPUT.value:
+  #  jax.profiler.start_trace(_PROFILING_OUTPUT.value)
+  
   decode_state = engine.init_decode_state()
   for batch in MAXTEXT_PREFILL.keys():
     runtime, decode_state = run_prefill_time(engine, params, decode_state, batch)
     prefill_times[batch] = runtime
-
+  
+  #if _PROFILING_OUTPUT.value:
+  #  jax.profiler.stop_trace()
   sampled_tokens_list = []
 
   for i in range(3): # warm up
@@ -149,6 +156,10 @@ def main(argv):
 
   print('======= decode starting ===')
   dec_times = []
+
+  if _PROFILING_OUTPUT.value:
+    jax.profiler.start_trace(_PROFILING_OUTPUT.value)
+
   for i in range(10):
     start = time.perf_counter()
     decode_state, sampled_tokens = engine.generate(
@@ -159,7 +170,6 @@ def main(argv):
     end = time.perf_counter()
     dec_times.append(end - start)
     print(i, 'decode time', (end - start))
-
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.stop_trace()

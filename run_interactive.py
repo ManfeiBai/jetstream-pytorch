@@ -96,7 +96,8 @@ def create_engine():
 
 
 def main(argv):
-
+  for x in jax.live_arrays():
+    x.delete()
   engine = create_engine()
 
   start = time.perf_counter()
@@ -107,7 +108,7 @@ def main(argv):
   vocab = token_utils.load_vocab(
     metadata.path, metadata.extra_ids)
   stop_tokens = [vocab.eos_id, vocab.pad_id]
-  max_output_length = 1024
+  max_output_length = 256 
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.start_trace(_PROFILING_OUTPUT.value)
@@ -121,7 +122,7 @@ def main(argv):
     "<s>[INST] <<SYS>>\nYou are an AI assistant. You will be given a task. You must generate a detailed and long answer.\n<</SYS>>\n\nContinue the following story.\n\nKay didn't have shoes that fit her feet properly. She only wore sneakers, because the \nChoose from: [I] shoes  fitted badly. [II] sneakers  fitted badly. [/INST]",
   ]
   for prompt in prompts:
-    slot = random.randint(0, _BATCH_SIZE.value) 
+    slot = random.randint(0, _BATCH_SIZE.value - 1) 
     tokens, true_length = token_utils.tokenize_and_pad(prompt, vocab, is_bos=True)
     print(f"---- Input prompts are: {prompt}")
     print(f"---- Encoded tokens are: {tokens}")
@@ -132,13 +133,14 @@ def main(argv):
     decode_state = engine.insert(
         prefill_result, decode_state, slot=slot
     )
+    #print(f"decode state after insertion: {decode_state}")
     sampled_tokens_list = []
     print(f"---- Streaming decode started on #slot{slot}.")
     while True:
       decode_state, result_tokens = engine.generate(
         params, decode_state
       )
-
+      #print(f"decode state after decoding: {decode_state}")
       slot_data = result_tokens.get_result_at_slot(slot)
       slot_tokens = slot_data.tokens
       slot_lengths = slot_data.lengths

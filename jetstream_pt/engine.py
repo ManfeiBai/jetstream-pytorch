@@ -83,10 +83,10 @@ class PyTorchEngine(engine_api.Engine):
     self.cache_sharding = self.y_sharding
 
     self.prefill = jax.jit(self.prefill, out_shardings=self.get_prefix_destination_sharding())
-    #self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
-    self.insert = jax.jit(self.insert, out_shardings=self.get_decode_state_sharding())
-    #self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
-    self.generate = jax.jit(self.generate, out_shardings=(self.get_decode_state_sharding(), None, None))
+    self.insert = jax.jit(self.insert, donate_argnums=(0, 1), out_shardings=self.get_decode_state_sharding())
+    #self.insert = jax.jit(self.insert, out_shardings=self.get_decode_state_sharding())
+    self.generate = jax.jit(self.generate, donate_argnums=(1, ), out_shardings=(self.get_decode_state_sharding(), None))
+    #self.generate = jax.jit(self.generate, out_shardings=(self.get_decode_state_sharding(), None, None))
     self._lock = threading.RLock()
 
   def sharding_by_name(self, name):
@@ -209,7 +209,8 @@ class PyTorchEngine(engine_api.Engine):
       existing_prefix: Optional[Prefix] = None,
       padded_tokens: PrefillInputs,  # PrefillInputs[jax.Array],
       true_length: int
-  ) -> tuple[Prefix, Any]:
+  #) -> tuple[Prefix, Any]:
+  ) -> Prefix:
     if isinstance(padded_tokens, jax.Array):
       batched_token = padded_tokens.reshape(1, -1)
     else:
@@ -237,7 +238,7 @@ class PyTorchEngine(engine_api.Engine):
     #       v, seq_len - true_length, true_length, axis=2))
     #   for k, v in updated_caches
     # ]
-    return Prefix(token, updated_caches, true_length), logits 
+    return Prefix(token, updated_caches, true_length) #, logits 
 
   def shrink_prefix(
       self,
@@ -409,10 +410,9 @@ class PyTorchEngine(engine_api.Engine):
     scales = []
     lens = decode_state.lens.at[slot].set(1)
     input_pos = decode_state.input_pos.at[slot].set(prefix.seq_len)
-   
     caches = []
     if not self.env.enable_kv_quantization:
-      #@functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
+      @functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
       def insert(cache, new_entry):
           res = jax.lax.dynamic_update_slice(
               cache,
@@ -426,7 +426,33 @@ class PyTorchEngine(engine_api.Engine):
         for (k, v), (newk, newv) in zip(decode_state.caches, prefix.caches)
       ]
     else:
-      pass
+      @functools.partial(jax.jit, donate_argnums=(0, 1), inline=True)
+      def insert(cache, scaler, new_entry):
+          reduce_axis = (1, 3)
+          vals, scales = torch_xla2.extra.call_torch(
+            quantize.quantize_torch_int8, new_entry, reduce_axis)
+          new_scaler = jax.lax.dynamic_update_slice(
+              scaler,
+              scales,
+              [slot, 0, 0, 0],
+          )
+          new_scaler = jax.lax.with_sharding_constraint(new_scaler, self.replicated)
+          res = jax.lax.dynamic_update_slice(
+              cache,
+              vals,
+              [slot, 0, 0, 0],
+          )
+          res = jax.lax.with_sharding_constraint(res, self.cache_sharding)
+          return res, new_scaler
+
+      for (k, v), (kscaler, vscaler), (newk, newv) in zip(
+          decode_state.caches,
+          decode_state.cache_scales,
+          prefix.caches):
+        kcache, kscale = insert(k, kscaler, newk)
+        vcache, vscale = insert(v, vscaler, newv)
+        caches.append((kcache, vcache))
+        scales.append((kscale, vscale))
 
     return DecodeState(
       tokens, 
@@ -452,7 +478,7 @@ class PyTorchEngine(engine_api.Engine):
 
   def generate(
       self, params: Any, decode_state: DecodeState
-  ) -> tuple[DecodeState, engine_api.ResultTokens, Any]:
+  ) -> tuple[DecodeState, engine_api.ResultTokens]: #, Any]:
     # fill mask first
     # [bsz, seqlen]
     batch = jnp.arange(decode_state.mask.shape[0])
@@ -475,7 +501,7 @@ class PyTorchEngine(engine_api.Engine):
         ],
         axis=-1,
     )
-
+    input_pos = jnp.where(decode_state.input_pos == 0, 0, (decode_state.input_pos + 1) % self.env.cache_sequence_length)
     # [0] is the batch dimension, [1] normally should be 1
     length = next_token.shape[1]
     result_tokens = engine_api.ResultTokens(
@@ -493,13 +519,13 @@ class PyTorchEngine(engine_api.Engine):
       new_scales,
       (decode_state.current_position + 1) % self.env.cache_sequence_length,
       lens,
-      decode_state.input_pos + 1,
+      input_pos,
       mask,
     )
     print('new_pos', (decode_state.current_position + 1) % self.env.cache_sequence_length)
-    print('input_pos', (decode_state.input_pos))
+    print('input_pos', (input_pos))
     print('cache_seq_len', self.env.cache_sequence_length)
-    return new_decode_state, result_tokens, logits
+    return new_decode_state, result_tokens#, logits
 
 
   def get_tokenizer(self) -> tokenizer_pb2.TokenizerParameters:
@@ -570,7 +596,7 @@ class PyTorchEngine(engine_api.Engine):
         self.replicated,
         self.cache_sharding,
         self.replicated,
-    ), self.replicated
+    )#, self.replicated
 
   def get_decode_state_sharding(self) -> DecodeState:
     """Gets the shardings corresponding to the decode state."""

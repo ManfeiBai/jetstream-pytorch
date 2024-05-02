@@ -109,8 +109,8 @@ class KVCacheGenerate:
         default_dtype = jnp.bfloat16 if bf16_enable else jnp.float32
         k = jnp.zeros(shape, device=device, dtype=default_dtype)
         v = jnp.zeros(shape, device=device, dtype=default_dtype)
-        k, v = torch_xla2.tensor.wrap((k, v))
         pos = jnp.zeros((shape[0]))  # replicated
+        k, v, pos = torch_xla2.tensor.wrap((k, v, pos))
         return cls(k, v, pos, device)
 
 def KVCacheGenerate_flatten(cache):
@@ -146,7 +146,7 @@ class Int8KVCacheGenerate:
         self.k_scaler = cache_k_scaler 
         self.v_scaler = cache_v_scaler 
         self.input_pos = input_pos
-        self.batch = torch.arange(input_pos.shape[0])
+        self.batch = torch_xla2.tensor.wrap(jnp.arange(input_pos.shape[0]))
 
     def state(self):
         return torch_xla2.tensor.unwrap((self.cache_k, self.cache_v))
@@ -162,9 +162,9 @@ class Int8KVCacheGenerate:
         # bf16_enable is a placeholder parameter, it's not used in Int8KVCache 
         kscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
         vscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
-
-        cache_k, cache_v, kscaler, vscaler = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler))
-        return cls(cache_k, cache_v, kscaler, vscaler, 0, device)
+        input_pos = jnp.zeros((shape[0]))
+        cache_k, cache_v, kscaler, vscaler, input_pos = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler, input_pos))
+        return cls(cache_k, cache_v, kscaler, vscaler, input_pos, device)
 
 
     def quantize(self, val):
@@ -176,8 +176,9 @@ class Int8KVCacheGenerate:
     def update(self, xk, xv):
         k_quant, kscale = self.quantize(xk)
         v_quant, vscale = self.quantize(xv)
-        self.cache_k[self.batch, :, self.input_pos, :] = jnp.squeeze(k_quant, 2)
-        self.cache_v[self.batch, :, self.input_pos, :] = jnp.squeeze(v_quant, 2)
-        self.k_scaler[self.batch, :, self.input_pos, :] = jnp.squeeze(kscale, 2)
-        self.v_scaler[self.batch, :, self.input_pos, :] = jnp.squeeze(vscale, 2)
+        #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
+        self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
+        self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
+        self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
+        self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
         return self.cache_k, self.cache_v, self.k_scaler, self.v_scaler

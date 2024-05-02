@@ -66,9 +66,9 @@ def ragged_flash_attention_kernel(
     o_ref,
     m_ref,
     l_ref,
-    *,
     bk: int,
     mask_value: float,
+    normalize_var: bool,
 ):
   """Pallas kernel for flash attention."""
   b, i = pl.program_id(0), pl.program_id(1)
@@ -91,6 +91,8 @@ def ragged_flash_attention_kernel(
     qk = lax.dot_general(
         q, k, (((1,), (1,)), ((), ())), preferred_element_type=jnp.float32
     )
+    if normalize_var:
+        qk = qk / jnp.sqrt(k.shape[-1])
     mask = i * bk + jax.lax.broadcasted_iota(jnp.int32, qk.shape, 1) < length
     qk = qk + jnp.where(mask, 0.0, mask_value)
     m_curr = qk.max(axis=-1)
@@ -98,7 +100,7 @@ def ragged_flash_attention_kernel(
     s_curr = jnp.exp(qk - m_curr[..., None])
     l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
     o_curr_times_l_curr = jnp.dot(s_curr, v)
-
+    
     m_curr = jax.lax.broadcast_in_dim(m_curr, m_prev.shape, (0,))
     m_next = jnp.maximum(m_prev, m_curr)
     alpha = jnp.exp(m_prev - m_next)
@@ -111,6 +113,64 @@ def ragged_flash_attention_kernel(
         (l_prev * alpha * o_ref[...] + beta * o_curr_times_l_curr) / l_next_safe
     ).astype(o_ref.dtype)
 
+def ragged_flash_attention_quantized_kernel(
+    lengths_ref,
+    q_ref,
+    k_ref,
+    v_ref,
+    k_scaler_ref,
+    v_scaler_ref,
+    o_ref,
+    m_ref,
+    l_ref,
+    bk: int,
+    mask_value: float,
+    normalize_var: bool,
+):
+  """Pallas kernel for flash attention."""
+  b, i = pl.program_id(0), pl.program_id(1)
+
+  @pl.when(i == 0)
+  def init():
+    m_ref[...] = jnp.full_like(m_ref, -jnp.inf)
+    l_ref[...] = jnp.zeros_like(l_ref)
+    o_ref[...] = jnp.zeros_like(o_ref)
+
+  length = lengths_ref[b]
+
+  @pl.when(i * bk < length)
+  def run():
+    q = q_ref[...].astype(jnp.float32)
+    k = k_ref[...].astype(jnp.float32)
+    v = v_ref[...].astype(jnp.float32)
+    m_prev, l_prev = m_ref[...], l_ref[...]
+
+    qk = lax.dot_general(
+        q, k, (((1,), (1,)), ((), ())), preferred_element_type=jnp.float32
+    )
+    if normalize_var:
+        qk = qk / jnp.sqrt(k.shape[-1])
+    qk = qk * k_scaler_ref[...]
+    mask = i * bk + jax.lax.broadcasted_iota(jnp.int32, qk.shape, 1) < length
+    qk = qk + jnp.where(mask, 0.0, mask_value)
+    m_curr = qk.max(axis=-1)
+
+    s_curr = jnp.exp(qk - m_curr[..., None])
+    
+    l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
+    s_curr = s_curr * v_scaler_ref[...]
+    o_curr_times_l_curr = jnp.dot(s_curr, v)
+    m_curr = jax.lax.broadcast_in_dim(m_curr, m_prev.shape, (0,))
+    m_next = jnp.maximum(m_prev, m_curr)
+    alpha = jnp.exp(m_prev - m_next)
+    beta = jnp.exp(m_curr - m_next)
+    l_next = alpha * l_prev + beta * l_curr
+    l_next_safe = jnp.where(l_next == 0.0, 1.0, l_next)
+
+    m_ref[...], l_ref[...] = m_next, l_next_safe
+    o_ref[...] = (
+        (l_prev * alpha * o_ref[...] + beta * o_curr_times_l_curr) / l_next_safe
+    ).astype(o_ref.dtype)
 
 #@functools.partial(jax.jit, static_argnames=["bk", "mask_value"])
 def ragged_mqa(
@@ -118,8 +178,11 @@ def ragged_mqa(
     k: jax.Array,
     v: jax.Array,
     lengths: jax.Array,
+    k_scaler: jax.Array | None = None,
+    v_scaler: jax.Array | None = None,
     bk: int = 128,
     mask_value: float = DEFAULT_MASK_VALUE,
+    normalize_var: bool = False,
 ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
   """Ragged multi query attention."""
   batch_size, num_heads, head_dim = q.shape 
@@ -142,12 +205,49 @@ def ragged_mqa(
   def kv_index_map(b, i, lengths_ref):
     b_next, i_next = _compute_ragged_block_indices(b, i, lengths_ref)
     return b_next, i_next, 0
-
-  out, m, l = pl.pallas_call(
+  print(f"q: {q.shape}, k: {k.shape}, v: {v.shape}, lengths: {lengths.shape}, bk: {bk}")
+  if k_scaler is not None:
+      print(f"k_scaler: {k_scaler.shape}")
+  #jax.debug.print(f"q: {q.shape}, k: {k.shape}, v: {v.shape}, lengths: {lengths.shape}, bk: {bk}")
+ 
+  if k_scaler is not None:
+    out, m, l = pl.pallas_call(
+      functools.partial(
+          ragged_flash_attention_quantized_kernel,
+          bk=bk,
+          mask_value=mask_value,
+          normalize_var=normalize_var,
+      ),
+      grid_spec=pltpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=1,
+          in_specs=[
+              pl.BlockSpec(lambda b, i, _: (b, 0, 0), (None, num_heads, head_dim)),
+              pl.BlockSpec(kv_index_map, (None, bk, head_dim)),
+              pl.BlockSpec(kv_index_map, (None, bk, head_dim)),
+              pl.BlockSpec(kv_index_map, (None, 1, bk)),
+              pl.BlockSpec(kv_index_map, (None, 1, bk)),
+          ],
+          out_specs=[
+              pl.BlockSpec(lambda b, i, _: (b, 0, 0), (None, num_heads, head_dim)),
+              pl.BlockSpec(lambda b, i, _: (b, 0, 0), (None, num_heads, head_dim)),
+              pl.BlockSpec(lambda b, i, _: (b, 0, 0), (None, num_heads, head_dim)),
+          ],
+          grid=(batch_size, seq_len // bk),
+      ),
+      mosaic_params=dict(dimension_semantics=("parallel", "arbitrary")),
+      out_shape=[
+          q,
+          jax.ShapeDtypeStruct((batch_size, num_heads, head_dim), jnp.float32),
+          jax.ShapeDtypeStruct((batch_size, num_heads, head_dim), jnp.float32),
+      ],
+    )(lengths, q, k, v, k_scaler, v_scaler)
+  else:
+    out, m, l = pl.pallas_call(
       functools.partial(
           ragged_flash_attention_kernel,
           bk=bk,
           mask_value=mask_value,
+          normalize_var=normalize_var,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
@@ -169,7 +269,7 @@ def ragged_mqa(
           jax.ShapeDtypeStruct((batch_size, num_heads, head_dim), jnp.float32),
           jax.ShapeDtypeStruct((batch_size, num_heads, head_dim), jnp.float32),
       ],
-  )(lengths, q, k, v)
+    )(lengths, q, k, v)
   return out, (m[..., 0], l[..., 0])
 
 def mha_reference(
@@ -242,6 +342,9 @@ def ragged_mha(
     k: jax.Array,
     v: jax.Array,
     lengths: jax.Array,
+    k_scaler: jax.Array | None = None,
+    v_scaler: jax.Array | None = None,
+    normalize_var: bool = True,
     #bk: int,
     #logit_cap: float | None = None,
     #mask_value: float = DEFAULT_MASK_VALUE,
@@ -278,56 +381,66 @@ def ragged_mha(
     along with the max logit ([batch_size, num_heads, compute_dim, 1]) and
     softmax denominator ([batch_size, num_heads, compute_dim, 1]).
   """
-  bk = 256
   mask_value = DEFAULT_MASK_VALUE
   kv_head_axis = 1
   bsz, _, seqlen, _ = q.shape
+  cache_len = k.shape[-2]
+
+  if lengths.ndim > 1:
+      lengths.reshape((lengths.shape[0],))
+  
+  num_blk_3 = jnp.where(lengths >= 0.75 * cache_len, 1, 0)
+  num_blk_2 = jnp.where(lengths >= 0.5 * cache_len, 1, 0)
+
+  #bk = jax.lax.cond(jnp.sum(num_blk_2) >= bsz * 0.5, lambda:jnp.array(cache_len/2, dtype=jnp.int32), lambda:jnp.array(cache_len/4, dtype=jnp.int32))
+  #bk = jax.lax.cond(jnp.sum(num_blk_3) >= bsz * 0.5, lambda:jnp.array(cache_len, dtype=jnp.int32), lambda:bk)
+  #bk = jax.lax.cond(bk < 512, lambda:jnp.array(512, dtype=jnp.int32), lambda:bk)
+
+  #bk = jax.lax.cond(jnp.sum(num_blk_2) >= bsz * 0.5, lambda:jnp.array(cache_len/2, dtype=jnp.int32), lambda:jnp.array(cache_len/4, dtype=jnp.int32))
+  #bk = jax.lax.cond(jnp.sum(num_blk_3) >= bsz * 0.5, lambda:jnp.array(cache_len, dtype=jnp.int32), lambda:bk)
+  #bk = jax.lax.cond(bk < 512, lambda:jnp.array(512, dtype=jnp.int32), lambda:bk)
+
+  #bk = jnp.array([512])
+  bk = 2048
+
   if seqlen == 1:
-      q = jnp.broadcast_to(q, (q.shape[0], q.shape[1], 8, q.shape[3]))
-  # YY: figure out why if statement doesn't work
-  #if lengths.ndim > 1:
-      #lengths.reshape((lengths.shape[0],)
-  lengths = jnp.squeeze(lengths)
-  out, (m, l) = jax.vmap(
+      q = jnp.broadcast_to(q, (q.shape[0], q.shape[1], 2, q.shape[3]))  
+  if k_scaler is not None:
+    out, (m, l) = jax.vmap(
       functools.partial(
           ragged_mqa,
           bk=bk,
           #logit_cap=logit_cap,
           mask_value=mask_value,
+          normalize_var=normalize_var,
+          #out_dtype=out_dtype,
+          #use_base2=use_base2,
+          #sliding_window_size=sliding_window_size
+      ),
+      in_axes=(1, kv_head_axis, kv_head_axis, None, None, None),
+      out_axes=1,
+    )(q, k, v, lengths, k_scaler, v_scaler)
+  else:
+    out, (m, l) = jax.vmap(
+      functools.partial(
+          ragged_mqa,
+          bk=bk,
+          #logit_cap=logit_cap,
+          mask_value=mask_value,
+          normalize_var=normalize_var,
           #out_dtype=out_dtype,
           #use_base2=use_base2,
           #sliding_window_size=sliding_window_size
       ),
       in_axes=(1, kv_head_axis, kv_head_axis, None),
       out_axes=1,
-  )(q, k, v, lengths)
+    )(q, k, v, lengths)
   if seqlen == 1:
       out = out[:, :, 0:1, :]
       m = m[:, :, 0:1]
       l = l[:, :, 0:1]
   return out, (m, l)
 
-#def partition(bk, mask_value, mesh, arg_shapes, result_shapes):
-def partition(mesh, arg_shapes, result_shapes):
-    arg_shardings = jax.tree_map(lambda s: s.sharding, arg_shapes)
-    assert isinstance(arg_shardings, tuple)
-    result_shardings = jax.tree_map(lambda s: s.sharding, result_shapes)
-    assert isinstance(result_shardings, tuple)
-    def lower_fn(q, k, v, lengths):
-        return ragged_mha(q, k, v, lengths)
-        #return ragged_mha(q, k, v, lengths, bk, mask_value)
-    return mesh, lower_fn, result_shardings, arg_shardings
-
-#def infer_sharding_from_operands(bk, mask_value, mesh, arg_shapes, result_shapes):
-def infer_sharding_from_operands(mesh, arg_shapes, result_shapes):
-    arg_sharding0 = jsharding.NamedSharding(mesh, P(None, 'x', None, None))
-    arg_sharding1 = jsharding.NamedSharding(mesh, P(None, 'x', None))
-    return arg_sharding0, (arg_sharding1, arg_sharding1)
-"""
-ragged_mha.def_partition(infer_sharding_from_operands=infer_sharding_from_operands,
-        partition=partition,
-    )
-"""
 def dense_attention(
     xq: jax.Array,
     keys: jax.Array,
@@ -373,14 +486,14 @@ def dense_attention_quantized(
     values: jax.Array,
     lengths: Optional[jax.Array] = None,
     k_scaler = None,
-    v_sclaer = None,
+    v_scaler = None,
     mask = None,
     env = None,
     mask_value: float = DEFAULT_MASK_VALUE,
 ):
       if env is None:
         raise NotImplementedError('Env missing!')
-      if k_scaler is None or v_sclaer is None:
+      if k_scaler is None or v_scaler is None:
         raise NotImplementedError('Scaler missing!')
       bsz, seqlen, num_heads, head_dim = xq.shape
       with jax.named_scope('attn_mat1'):
