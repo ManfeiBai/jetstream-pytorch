@@ -145,9 +145,17 @@ class Int8KVCacheGenerate:
         self.cache_v = cache_v
         self.k_scaler = cache_k_scaler 
         self.v_scaler = cache_v_scaler 
-        self.input_pos = input_pos
-        self.batch = torch_xla2.tensor.wrap(jnp.arange(input_pos.shape[0]))
-
+        self.input_pos_scale = input_pos
+        batch, _, seq, _ = self.cache_k.shape
+        self.input_pos = input_pos.reshape((batch, 1, 1, 1))
+        self.input_pos = jnp.broadcast_to(self.input_pos, (batch, 1, seq, 1))
+        self.index = jnp.arange(self.cache_k.shape[2]).reshape(1, 1, seq, 1)
+        self.index = jnp.broadcast_to(self.index, (batch, 1, seq, 1))
+        self.batch = jnp.arange(batch)
+        self.input_pos_scale, self.batch, self.input_pos, self.index =  torch_xla2.tensor.wrap((self.input_pos_scale, self.batch, self.input_pos, self.index))
+        #self.batch = torch_xla2.tensor.wrap(jnp.arange(input_pos.shape[0]))
+        #self.batch = jnp.arange(input_pos.shape[0])
+        
     def state(self):
         return torch_xla2.tensor.unwrap((self.cache_k, self.cache_v))
 
@@ -163,7 +171,9 @@ class Int8KVCacheGenerate:
         kscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
         vscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
         input_pos = jnp.zeros((shape[0]))
-        cache_k, cache_v, kscaler, vscaler, input_pos = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler, input_pos))
+        cache_k, cache_v, kscaler, vscaler = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler))
+        #input_pos = torch.zeros((shape[0]))
+        
         return cls(cache_k, cache_v, kscaler, vscaler, input_pos, device)
 
 
@@ -177,8 +187,34 @@ class Int8KVCacheGenerate:
         k_quant, kscale = self.quantize(xk)
         v_quant, vscale = self.quantize(xv)
         #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
-        self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
-        self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
-        self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
-        self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
+        #self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
+        #self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
+        #self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
+        #self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
+
+        # Follow FP16 way of converting
+        #k_quant = torch.squeeze(k_quant, 2)
+        #kscale = torch.squeeze(kscale, 2)
+        #v_quant = torch.squeeze(v_quant, 2)
+        #vscale = torch.squeeze(vscale, 2)
+        #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
+        #self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.input_pos, :].set(k_quant)
+        #self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.input_pos, :].set(v_quant)
+        #self.k_scaler._elem = self.k_scaler._elem.at[self.batch, :, self.input_pos, :].set(kscale)
+        #self.v_scaler._elem = self.v_scaler._elem.at[self.batch, :, self.input_pos, :].set(vscale)
+        
+        # Pure Pytorch
+        #self.cache_k[self.batch, :, self.input_pos, :] = k_quant
+        #self.cache_v[self.batch, :, self.input_pos, :] = v_quant
+        #self.k_scaler[self.batch, :, self.input_pos, :] = kscale
+        #self.v_scaler[self.batch, :, self.input_pos, :] = vscale
+        
+        # Iota
+        self.cache_k = torch.where(self.index == self.input_pos, k_quant, self.cache_k)
+        self.cache_v = torch.where(self.index == self.input_pos, v_quant, self.cache_v)
+        
+        #self.cache_k[self.batch, :, self.input_pos_scale, :] = torch.squeeze(k_quant, 2)
+        #self.cache_v[self.batch, :, self.input_pos_scale, :] = torch.squeeze(v_quant, 2)
+        self.k_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(kscale, 2) 
+        self.v_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(vscale, 2)
         return self.cache_k, self.cache_v, self.k_scaler, self.v_scaler

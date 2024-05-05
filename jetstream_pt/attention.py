@@ -392,16 +392,16 @@ def ragged_mha(
   num_blk_3 = jnp.where(lengths >= 0.75 * cache_len, 1, 0)
   num_blk_2 = jnp.where(lengths >= 0.5 * cache_len, 1, 0)
 
-  #bk = jax.lax.cond(jnp.sum(num_blk_2) >= bsz * 0.5, lambda:jnp.array(cache_len/2, dtype=jnp.int32), lambda:jnp.array(cache_len/4, dtype=jnp.int32))
-  #bk = jax.lax.cond(jnp.sum(num_blk_3) >= bsz * 0.5, lambda:jnp.array(cache_len, dtype=jnp.int32), lambda:bk)
-  #bk = jax.lax.cond(bk < 512, lambda:jnp.array(512, dtype=jnp.int32), lambda:bk)
+  #bk = jax.lax.cond(jnp.sum(num_blk_2) >= bsz * 0.5, lambda:cache_len/2, lambda:cache_len/4)
+  #bk = jax.lax.cond(jnp.sum(num_blk_3) >= bsz * 0.5, lambda:cache_len, lambda:bk)
+  #bk = jax.lax.cond(bk < 512, lambda:512, lambda:bk)
 
   #bk = jax.lax.cond(jnp.sum(num_blk_2) >= bsz * 0.5, lambda:jnp.array(cache_len/2, dtype=jnp.int32), lambda:jnp.array(cache_len/4, dtype=jnp.int32))
   #bk = jax.lax.cond(jnp.sum(num_blk_3) >= bsz * 0.5, lambda:jnp.array(cache_len, dtype=jnp.int32), lambda:bk)
   #bk = jax.lax.cond(bk < 512, lambda:jnp.array(512, dtype=jnp.int32), lambda:bk)
 
   #bk = jnp.array([512])
-  bk = 2048
+  bk = 512 
 
   if seqlen == 1:
       q = jnp.broadcast_to(q, (q.shape[0], q.shape[1], 2, q.shape[3]))  
@@ -496,18 +496,19 @@ def dense_attention_quantized(
       if k_scaler is None or v_scaler is None:
         raise NotImplementedError('Scaler missing!')
       bsz, seqlen, num_heads, head_dim = xq.shape
+      cachelen = keys.shape[2]
       with jax.named_scope('attn_mat1'):
         ## Attention start
         #scores = torch.einsum(jnp.einsum, "ijkl,ikml->ikjm", xq, keys) / math.sqrt(self.head_dim)
         if seqlen == 1:
           xq = torch.broadcast_to(xq, (xq.shape[0], 2, xq.shape[2], xq.shape[3]))
-        scores = torch_xla2.extra.call_jax(jnp.einsum, "ijkl,ikml->ikjm", xq, keys) / math.sqrt(head_dim) * (k_scaler.reshape(bsz, 1, 1, keys.shape[2]))
+        scores = torch_xla2.extra.call_jax(jnp.einsum, "ijkl,ikml->ikjm", xq, keys) / math.sqrt(head_dim) * (k_scaler.reshape(bsz, 1, 1, cachelen))
         env.apply_sharding(scores, axis=1)
         if mask is not None:
           scores = scores + mask  # (bs, n_local_heads, seqlen, max_seqlen)
       with jax.named_scope('attn_soft'):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-        scores = scores * v_scaler.reshape((bsz, 1, 1, keys.shape[2]))
+        scores = scores * v_scaler.reshape((bsz, 1, 1, cachelen))
         env.apply_sharding(scores, axis=1)
 
       with jax.named_scope('attn_mat2'):
