@@ -104,10 +104,14 @@ class TransformerBlock(nn.Module):
       freqs_cis: torch.Tensor,
       mask: Optional[torch.Tensor],
       cache,
+      start,
+      end,
+      pre_batch,
+      pre_block,
   ):
     with jax.named_scope("Attention"):
       attn = self.attention.forward(
-          self.attention_norm(x), freqs_cis, mask, cache
+          self.attention_norm(x), freqs_cis, mask, cache, start, end, pre_batch, pre_block
       )
     with jax.named_scope("ffn_norm"):
       h = x + attn
@@ -175,9 +179,12 @@ class Transformer(nn.Module):
   def forward(
       self,
       tokens: torch.Tensor,
-      input_pos: torch.Tensor,
       caches: List[Any],
       mask,
+      start,
+      input_pos,
+      pre_batch,
+      pre_block,
   ):
     with jax.named_scope("transformer_tok"):
       seqlen = tokens.shape[-1]
@@ -188,9 +195,10 @@ class Transformer(nn.Module):
       freqs_cis = self.freqs_cis[input_pos]
       freqs_cis = freqs_cis.reshape(bsz, seqlen, -1)
 
+      end = None if start is None else (start + input_pos) % self.env.cache_len
     for layer, cache in zip(self.layers, caches):
       with jax.named_scope("TransformerBlock"):
-        h = layer(h, freqs_cis, mask, cache)
+        h = layer(h, freqs_cis, mask, cache, start, end, pre_batch, pre_block)
 
     with jax.named_scope("transformer_norm"):
       h = self.norm(h)

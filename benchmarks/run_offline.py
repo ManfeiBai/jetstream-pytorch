@@ -75,7 +75,9 @@ _SHARDING_CONFIG = flags.DEFINE_string(
 _SHAREGPT_PATH = flags.DEFINE_string(
     "sharegpt_path", "", "path to sharegpt json file"
 )
-
+_RAGGED_MHA =  flags.DEFINE_bool(
+    'ragged_mha', False, 'Whether to enable ragged multi head attention', required=False
+)
 
 def create_engine():
   """Create a pytorch engine."""
@@ -97,6 +99,7 @@ def create_engine():
       max_cache_length=_MAX_CACHE_LENGTH.value,
       model_name=_MODEL_NAME.value,
       sharding_config=_SHARDING_CONFIG.value,
+      ragged_mha = _RAGGED_MHA.value,
   )
 
   print("Initialize engine", time.perf_counter() - start)

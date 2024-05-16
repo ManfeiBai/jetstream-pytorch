@@ -95,7 +95,9 @@ _SHARD_ON_BATCH = flags.DEFINE_bool(
     "whether to shard on batch dimension"
     "If set true, sharding_config will be ignored.",
 )
-
+_RAGGED_MHA =  flags.DEFINE_bool(
+    'ragged_mha', False, 'Whether to enable ragged multi head attention', required=False
+)
 
 # pylint: disable-next=all
 def main(argv: Sequence[str]):
@@ -123,6 +125,7 @@ def main(argv: Sequence[str]):
       max_cache_length=_MAX_CACHE_LENGTH.value,
       sharding_config=sharding_config_path,
       shard_on_batch=_SHARD_ON_BATCH.value,
+      ragged_mha=_RAGGED_MHA.value,
   )
   server_config = ServerConfig(
       interleaved_slices=(_PLATFORM.value,),
