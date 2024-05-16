@@ -142,7 +142,6 @@ class Attention(nn.Module):
     self.head_dim = args.dim // args.n_heads
     self.max_seq_len = args.max_seq_len
     self.n_heads = args.n_heads
-
     self.env = env
 
     LinearLayer = WeightOnlyInt8Linear if args.quantize else nn.Linear
@@ -195,8 +194,11 @@ class Attention(nn.Module):
     from jax.experimental.shard_map import shard_map
     #binded_ragged_mha = torch_xla2.extra.call_jax(shard_map, attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, self.env.replicated), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
     #binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding, len_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
-    self.binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
-    self.binded_ragged_mha_quantized = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding, len_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    self.binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    self.binded_ragged_mha = jax.jit(self.binded_ragged_mha)
+    self.binded_ragged_mha_quantized = functools.partial(attention.ragged_mha, bk=self.env.block_size, normalize_var=True)
+    self.binded_ragged_mha_quantized = shard_map(self.binded_ragged_mha_quantized, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, *([len_sharding]*6)), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
+    self.binded_ragged_mha_quantized = jax.jit(self.binded_ragged_mha_quantized)
 
   def load_hook(self, state_dict, prefix, *args):
       if prefix + "wq.weight" in state_dict:
@@ -211,7 +213,9 @@ class Attention(nn.Module):
       freqs_cis: torch.Tensor,
       mask: Optional[torch.Tensor],
       cache,
+      start,
       input_pos,
+      forward_params,
   ):
     # bsz, seqlen, _ = x.shape
     with jax.named_scope('attn_linear_before_cache'):
@@ -250,7 +254,9 @@ class Attention(nn.Module):
             #output = attention.dense_attention(xq, keys, values, env=self.env, mask=mask,)
             xq = xq.transpose(1, 2)
             #binded_ragged_mha = shard_map(attention.ragged_mha, mesh=self.env._mesh, in_specs=(q_sharding, k_sharding, v_sharding, len_sharding), out_specs=(output_sharding, (max_sharding, sum_sharding)), check_rep=False)
-            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(self.binded_ragged_mha, xq, keys, values, input_pos) #, None, None)
+            end = (start + input_pos) % self.env.cache_sequence_length
+            #jax.debug.print(f"YY start: {start}, end: {end}")
+            local_output, (local_max, local_sum) = torch_xla2.extra.call_jax(self.binded_ragged_mha, xq, keys, values, start, end) #, None, None)
             #local_sum = torch.unsqueeze(local_sum, -1)
             #output = local_output/local_sum
             output = local_output
@@ -268,7 +274,8 @@ class Attention(nn.Module):
             xq = xq.transpose(1, 2)
             k_scaler = torch.squeeze(k_scaler, -1)
             v_scaler = torch.squeeze(v_scaler, -1)
-            output, (_, _) = torch_xla2.extra.call_jax(self.binded_ragged_mha_quantized, xq, keys, values, input_pos, k_scaler, v_scaler)
+            end = (start + input_pos) % self.env.cache_sequence_length
+            output, (_, _) = torch_xla2.extra.call_jax(self.binded_ragged_mha_quantized, xq, keys, values, start, end, k_scaler, v_scaler, forward_params.pre_b, forward_params.pre_i, self.env.block_size)
         else:
             output = attention.dense_attention_quantized(xq, keys, values, env=self.env, mask=mask, k_scaler=k_scaler, v_scaler=v_scaler)
 

@@ -60,6 +60,13 @@ class JetEngineEnvironmentData:
     # If Ture, use bfloat16 as dtype. If False, use float32 as dtype 
     bf16_enable: bool = True
 
+    # If True, use ring buffer for kv cache, otherwise always insert to 0
+    ring_buffer: bool = True
+
+    # The ragged attention block size
+    block_size: int = 512
+
+
 class JetEngineEnvironment:
 
     def __init__(self, data: JetEngineEnvironmentData):
@@ -75,13 +82,14 @@ class JetEngineEnvironment:
 
         self.batch_size = self._data.batch_size
         self.seq_len = self._data.max_input_sequence_length
+        self.cache_len = self._data.cache_sequence_length
         self.num_layers = self._model_arg.n_layers
         self.num_kv_heads = self._model_arg.n_kv_heads
         self.num_heads = self._model_arg.n_heads
         self.head_dim = self._model_arg.dim // self._model_arg.n_heads
         self.cache_sequence_length = self._data.cache_sequence_length
         self.bf16_enable = self._data.bf16_enable
-
+        self.ring_buffer = self._data.ring_buffer
         Mesh = jax.sharding.Mesh
         P = jax.sharding.PartitionSpec
 
@@ -100,6 +108,7 @@ class JetEngineEnvironment:
                           for axis in self._data.attention_kv_axis_names)
         self.cache_sharding = jsharding.NamedSharding(self._mesh, P(*cache_sharding))
         self.ragged_mha = data.ragged_mha
+        self.block_size = data.block_size
 
     def __getattr__(self, name):
         return getattr(self._data, name)
@@ -134,9 +143,9 @@ class JetEngineEnvironment:
         shape = (self.batch_size, self.num_kv_heads, self._data.cache_sequence_length, self.head_dim)
         for _ in range(self.num_layers):
             if self.enable_kv_quantization:
-                caches.append(cache_manager.Int8KVCacheGenerate.empty(shape, self.cache_sharding, self.bf16_enable))
+                caches.append(cache_manager.Int8KVCacheGenerate.empty(shape, self.cache_sharding, self.bf16_enable, env=self))
             else:
-                caches.append(cache_manager.KVCacheGenerate.empty(shape, self.cache_sharding, self.bf16_enable))
+                caches.append(cache_manager.KVCacheGenerate.empty(shape, self.cache_sharding, self.bf16_enable, env=self))
         return caches
 
 

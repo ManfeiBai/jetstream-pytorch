@@ -79,12 +79,15 @@ class KVCacheGenerate:
     def __init__(self, 
         cache_k: torch.Tensor,  # previous cache
         cache_v: torch.Tensor,  # previous cache
+        input_index: int, # Ring buffer input location
         position: torch.Tensor,  # position to store the cache
         sharding,
+        env,
     ):
         super().__init__()
         self.cache_k = cache_k
         self.cache_v = cache_v
+        self.input_index = input_index
         self.pos = position
         if len(position.shape) > 1:
             self.pos = torch.squeeze(self.pos, 1)
@@ -92,26 +95,32 @@ class KVCacheGenerate:
         self.pos = torch_xla2.tensor.unwrap(self.pos)
         self.batch = jnp.arange(self.pos.shape[0])
         self.sharding = sharding
+        self.env = env
 
     def update(self, key, value):
-        keyj = torch.squeeze(key, 2)
-        valuej = torch.squeeze(value, 2)
-        keyj, valuej = torch_xla2.tensor.unwrap((keyj, valuej))
-        self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.pos].set(keyj)
-        self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.pos].set(valuej)
+        if self.env.ring_buffer:
+            keyj, valuej = torch_xla2.tensor.unwrap((key, value))
+            self.cache_k._elem = self.cache_k._elem.at[:, :, self.input_index].set(keyj)
+            self.cache_v._elem = self.cache_v._elem.at[:, :, self.input_index].set(valuej)
+        else:
+            keyj = torch.squeeze(key, 2)
+            valuej = torch.squeeze(value, 2)
+            keyj, valuej = torch_xla2.tensor.unwrap((keyj, valuej))
+            self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.pos].set(keyj)
+            self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.pos].set(valuej)
         return self.cache_k, self.cache_v 
 
     def state(self):
         return self.cache_k._elem, self.cache_v._elem
 
     @classmethod
-    def empty(cls, shape, device, bf16_enable):
+    def empty(cls, shape, device, bf16_enable, env):
         default_dtype = jnp.bfloat16 if bf16_enable else jnp.float32
         k = jnp.zeros(shape, device=device, dtype=default_dtype)
         v = jnp.zeros(shape, device=device, dtype=default_dtype)
         pos = jnp.zeros((shape[0]))  # replicated
         k, v, pos = torch_xla2.tensor.wrap((k, v, pos))
-        return cls(k, v, pos, device)
+        return cls(k, v, 0, pos, device, env)
 
 def KVCacheGenerate_flatten(cache):
     return torch_xla2.tensor.unwrap((cache.cache_k, cache.cache_v)), (cache.pos, cache.sharding)
@@ -137,14 +146,19 @@ class Int8KVCacheGenerate:
         cache_v, 
         cache_k_scaler,
         cache_v_scaler, 
+        input_indexes,
         input_pos,  # used to write cache
         sharding = None,
+        env = None,
     ):
         super().__init__()
         self.cache_k = cache_k
         self.cache_v = cache_v
         self.k_scaler = cache_k_scaler 
         self.v_scaler = cache_v_scaler 
+        self.input_indexes = input_indexes
+        self.env = env
+
         self.input_pos_scale = input_pos
         batch, _, seq, _ = self.cache_k.shape
         self.input_pos = input_pos.reshape((batch, 1, 1, 1))
@@ -164,17 +178,17 @@ class Int8KVCacheGenerate:
         return torch_xla2.tensor.unwrap((self.k_scaler, self.v_scaler))
 
     @classmethod
-    def empty(cls, shape, device, bf16_enable):
+    def empty(cls, shape, device, bf16_enable, env):
         cache_k = jnp.zeros(shape, device=device, dtype=jnp.int8)
         cache_v = jnp.zeros(shape, device=device, dtype=jnp.int8)
         # bf16_enable is a placeholder parameter, it's not used in Int8KVCache 
         kscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
         vscaler = jnp.ones((shape[0], 1, shape[2], 1), dtype=jnp.bfloat16)
+        input_indexes = jnp.array([0])
         input_pos = jnp.zeros((shape[0]))
-        cache_k, cache_v, kscaler, vscaler = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler))
+        cache_k, cache_v, kscaler, vscaler, input_indexes = torch_xla2.tensor.wrap((cache_k, cache_v, kscaler, vscaler, input_indexes))
         #input_pos = torch.zeros((shape[0]))
-        
-        return cls(cache_k, cache_v, kscaler, vscaler, input_pos, device)
+        return cls(cache_k, cache_v, kscaler, vscaler, input_indexes, input_pos, device, env)
 
 
     def quantize(self, val):
@@ -186,35 +200,46 @@ class Int8KVCacheGenerate:
     def update(self, xk, xv):
         k_quant, kscale = self.quantize(xk)
         v_quant, vscale = self.quantize(xv)
-        #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
-        #self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
-        #self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
-        #self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
-        #self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
 
-        # Follow FP16 way of converting
-        #k_quant = torch.squeeze(k_quant, 2)
-        #kscale = torch.squeeze(kscale, 2)
-        #v_quant = torch.squeeze(v_quant, 2)
-        #vscale = torch.squeeze(vscale, 2)
-        #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
-        #self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.input_pos, :].set(k_quant)
-        #self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.input_pos, :].set(v_quant)
-        #self.k_scaler._elem = self.k_scaler._elem.at[self.batch, :, self.input_pos, :].set(kscale)
-        #self.v_scaler._elem = self.v_scaler._elem.at[self.batch, :, self.input_pos, :].set(vscale)
+        if self.env.ring_buffer:
+            self.cache_k[:, :, self.input_indexes, :] = k_quant
+            self.cache_v[:, :, self.input_indexes, :] = v_quant
+            self.k_scaler[:, :, self.input_indexes, :] = kscale
+            self.v_scaler[:, :, self.input_indexes, :] = vscale
+        else:
+            #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
+            #self.cache_k[self.batch, :, self.input_pos, :] = torch.squeeze(k_quant, 2)
+            #self.cache_v[self.batch, :, self.input_pos, :] = torch.squeeze(v_quant, 2)
+            #self.k_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(kscale, 2)
+            #self.v_scaler[self.batch, :, self.input_pos, :] = torch.squeeze(vscale, 2)
+
+            # Follow FP16 way of converting
+            #k_quant = torch.squeeze(k_quant, 2)
+            #kscale = torch.squeeze(kscale, 2)
+            #v_quant = torch.squeeze(v_quant, 2)
+            #vscale = torch.squeeze(vscale, 2)
+            
+            # Work on the Jax Tensor directly, still very slow
+            #k_quant, kscale, v_quant, vscale = torch_xla2.tensor.unwrap((k_quant, kscale, v_quant, vscale))
+            #self.cache_k._elem = self.cache_k._elem.at[self.batch, :, self.input_pos, :].set(k_quant)
+            #self.cache_v._elem = self.cache_v._elem.at[self.batch, :, self.input_pos, :].set(v_quant)
+            #self.k_scaler._elem = self.k_scaler._elem.at[self.batch, :, self.input_pos, :].set(kscale)
+            #self.v_scaler._elem = self.v_scaler._elem.at[self.batch, :, self.input_pos, :].set(vscale)
+            
+            # Pure Pytorch, too slow for insert
+            #self.cache_k[self.batch, :, self.input_pos, :] = k_quant
+            #self.cache_v[self.batch, :, self.input_pos, :] = v_quant
+            #self.k_scaler[self.batch, :, self.input_pos, :] = kscale
+            #self.v_scaler[self.batch, :, self.input_pos, :] = vscale
+            
+            # Iota, faster than slicing, still very slow
+            #self.cache_k = torch.where(self.index == self.input_pos, k_quant, self.cache_k)
+            #self.cache_v = torch.where(self.index == self.input_pos, v_quant, self.cache_v)
+            
+            # Slicing, slowest 
+            self.cache_k[self.batch, :, self.input_pos_scale, :] = torch.squeeze(k_quant, 2)
+            self.cache_v[self.batch, :, self.input_pos_scale, :] = torch.squeeze(v_quant, 2)
+            self.k_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(kscale, 2) 
+            self.v_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(vscale, 2)
         
-        # Pure Pytorch
-        #self.cache_k[self.batch, :, self.input_pos, :] = k_quant
-        #self.cache_v[self.batch, :, self.input_pos, :] = v_quant
-        #self.k_scaler[self.batch, :, self.input_pos, :] = kscale
-        #self.v_scaler[self.batch, :, self.input_pos, :] = vscale
-        
-        # Iota
-        self.cache_k = torch.where(self.index == self.input_pos, k_quant, self.cache_k)
-        self.cache_v = torch.where(self.index == self.input_pos, v_quant, self.cache_v)
-        
-        #self.cache_k[self.batch, :, self.input_pos_scale, :] = torch.squeeze(k_quant, 2)
-        #self.cache_v[self.batch, :, self.input_pos_scale, :] = torch.squeeze(v_quant, 2)
-        self.k_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(kscale, 2) 
-        self.v_scaler[self.batch, :, self.input_pos_scale, :] = torch.squeeze(vscale, 2)
         return self.cache_k, self.cache_v, self.k_scaler, self.v_scaler

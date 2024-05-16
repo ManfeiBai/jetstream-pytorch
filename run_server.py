@@ -74,7 +74,9 @@ _PARAM_SIZE =flags.DEFINE_string(
 _QUANTIZE_WEIGHTS = flags.DEFINE_bool('quantize_weights', False, 'weight quantization')
 _QUANTIZE_KV_CACHE = flags.DEFINE_bool('quantize_kv_cache', False, 'kv_cache_quantize')
 _MAX_CACHE_LENGTH = flags.DEFINE_integer('max_cache_length', 1024, 'kv_cache_quantize')
-
+_RAGGED_MHA =  flags.DEFINE_bool(
+    'ragged_mha', False, 'Whether to enable ragged multi head attention', required=False
+)
 
 def main(argv: Sequence[str]):
   del argv
@@ -93,7 +95,8 @@ def main(argv: Sequence[str]):
         quantize_weights=_QUANTIZE_WEIGHTS.value,
         quantize_kv=_QUANTIZE_KV_CACHE.value,
         max_cache_length = _MAX_CACHE_LENGTH.value,
-  )
+        ragged_mha = _RAGGED_MHA.value,
+ )
   server_config = ServerConfig(
         interleaved_slices=(_PLATFORM.value, ),
         interleaved_engine_create_fns=(lambda a: engine, ),

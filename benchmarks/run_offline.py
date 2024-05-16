@@ -126,7 +126,6 @@ def run_prefill_time(engine, params, decode_state, seqlen):
 MAXTEXT_PREFILL = {16:0, 32: 0, 64 : 14.02, 128:18.29, 256:23.59, 512:35.28, 1024: 60.28}
 
 def main(argv):
-
   engine = create_engine()
 
   start = time.perf_counter()
@@ -181,11 +180,12 @@ def main(argv):
   decode_time_ms = sum(dec_times) * 1000 / 10 / _BATCH_SIZE.value
 
   import analyze_sharegpt
-  analyze_sharegpt.do_simulation(prefill_times_ms, decode_time_ms)
+  #analyze_sharegpt.do_simulation(prefill_times_ms, decode_time_ms)
 
 
 
 if __name__ == "__main__":
   import os
   os.environ["TF_CPP_MIN_LOG_LEVEL"] = "0"
+  #os.environ["XLA_FLAGS"] = "--xla_enable_transpose_trace=True"
   app.run(main)

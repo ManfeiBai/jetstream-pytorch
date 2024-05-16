@@ -6,13 +6,57 @@ from typing import Any, List, Optional
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch_xla2
 
 from . import model_args 
 import jax
 
 from jetstream_pt.layers import Attention, RMSNorm, Int8Embedding, WeightOnlyInt8Linear
 
+class ForwardParams:
+  """Calculates the params used by Forward functions."""
 
+  def __init__(self, start, input_pos, cache_len, block_size):
+      def _pre_compute_ragged_block_indices(b, i, start, end, bk, batch_size, seq_len):
+      # with jax.named_scope("compute_indices"):
+        start = start.reshape((batch_size, 1))
+        end = end.reshape((batch_size, 1))
+
+        am_last_batch = b == batch_size - 1
+        last_good_block = torch.where(start < end, torch.div(end - 1, bk), torch.div(seq_len -1, bk))
+
+        next_b = torch.where(am_last_batch, b, b + 1)
+        next_i = torch.where(am_last_batch, last_good_block, 0)
+
+        # start < end
+        def true_comp(b, i, bk, start, end, next_b, next_i):
+          b_next = torch.where(i * bk >= end, next_b, b)
+          i_next = torch.where(i * bk >= end, next_i, i)
+          i_next = torch.where((i + 1) * bk <= start, torch.div(start, bk), i_next)
+          return b_next, i_next
+
+        # start > end
+        def false_comp(b, i, bk, start, end):
+          b_next = b
+          i_next = torch.where(torch.logical_and(i * bk >= end, (i + 1) * bk <= start), torch.div(start, bk), i)
+          return b_next, i_next
+
+        true_comp_b, true_comp_i = true_comp(b_iota, i, bk, start, end, next_b, next_i)
+        false_comp_b, false_comp_i = false_comp(b_iota, i, bk, start, end)
+
+        b_next = torch.where(start < end, true_comp_b, torch.where(start == end, next_b, false_comp_b))
+        i_next = torch.where(start < end, true_comp_i, torch.where(start == end, next_i, false_comp_i))
+        return b_next, i_next
+
+      start, input_pos = torch_xla2.tensor.wrap((start, input_pos))
+      bsz = start.shape[0]
+      b_iota = torch.arange(bsz).reshape((bsz, 1))
+      num_bk = cache_len // block_size
+      num_bk_iota = torch.arange(num_bk).reshape((1, num_bk))
+      num_bk_iota = torch.broadcast_to(num_bk_iota, (bsz, num_bk))
+      end = (start + input_pos) % cache_len
+      self.pre_b, self.pre_i = _pre_compute_ragged_block_indices(b_iota, num_bk_iota, start, end, block_size, bsz, cache_len)
+      self.pre_b, self.pre_i = self.pre_b.reshape(-1), self.pre_i.reshape(-1)
 
 class FeedForward(nn.Module):
   """Feed-forward module."""
@@ -78,7 +122,7 @@ class TransformerBlock(nn.Module):
 
     self.attention = Attention(
         args,
-        env
+        env,
     )
     self.feed_forward = FeedForward(
         dim=args.dim,
@@ -99,7 +143,9 @@ class TransformerBlock(nn.Module):
       freqs_cis: torch.Tensor,
       mask: Optional[torch.Tensor],
       cache,
+      start: torch.Tensor | None,
       input_pos,
+      forward_params : ForwardParams
   ):
     with jax.named_scope('Attention'):
       attn = self.attention.forward(
@@ -107,7 +153,9 @@ class TransformerBlock(nn.Module):
           freqs_cis,
           mask,
           cache,
+          start,
           input_pos,
+          forward_params,
       )
     with jax.named_scope('ffn_norm'):
         h = x + attn
@@ -178,6 +226,7 @@ class Transformer(nn.Module):
   def forward(
       self,
       tokens: torch.Tensor,
+      start: torch.Tensor | None,
       input_pos: torch.Tensor,
       caches: List[Any],
       mask,
@@ -191,6 +240,8 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[input_pos]
         freqs_cis = freqs_cis.reshape(bsz, seqlen, -1)
 
+    forward_params = ForwardParams(start, input_pos, self.env.cache_len, self.env.block_size) if start is not None else None
+
     for layer, cache in zip(self.layers, caches):
       with jax.named_scope('TransformerBlock'):
         h = layer(
@@ -198,7 +249,9 @@ class Transformer(nn.Module):
             freqs_cis,
             mask,
             cache,
+            start,
             input_pos,
+            forward_params,
         )
 
     with jax.named_scope('transformer_norm'):
