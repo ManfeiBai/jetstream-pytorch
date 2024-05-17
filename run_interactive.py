@@ -164,8 +164,7 @@ def main(argv):
       )
       if complete[0]:
         break
-      token_id = output[0][0]
-      sampled_tokens_list.append(token_id)
+      sampled_tokens_list = output[0]
       # output_str = tokenizer.decode_str([token_id])
       # print(Fore.GREEN + output_str, end="", flush=True)
 
