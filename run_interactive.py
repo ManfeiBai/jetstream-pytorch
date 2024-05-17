@@ -159,9 +159,8 @@ def main(argv):
     complete = np.zeros((1,), dtype=np.bool_)
     while True:
       decode_state, result_tokens = engine.generate(params, decode_state)
-      result_tokens = result_tokens.convert_to_numpy()
-      output, complete = tokenizer.decode(
-          slot, max_output_length, result_tokens, complete
+      output, complete = tokenizer.process_result_token(
+          tokenizer, slot, max_output_length, result_tokens, complete
       )
       if complete[0]:
         break
