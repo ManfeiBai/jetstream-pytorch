@@ -174,7 +174,7 @@ def main(argv):
     print("---- All output tokens.")
     print(sampled_tokens_list)
     print("---- All output text.")
-    print(tokenizer.decode_str(sampled_tokens_list))
+    print(token_utils.text_tokens_to_str(sampled_tokens_list))
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.stop_trace()
