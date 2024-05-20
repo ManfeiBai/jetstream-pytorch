@@ -118,7 +118,8 @@ def main(argv):
   prefill_times = {}
 
   profiling_output = FLAGS.profiling_output
-  if profiling_output:
+  profiling_prefill = FLAGS.profiling_prefill
+  if profiling_prefill and profiling_output:
     jax.profiler.start_trace(profiling_output)
   decode_state = engine.init_decode_state()
   for batch, _ in MAXTEXT_PREFILL.items():
@@ -138,6 +139,8 @@ def main(argv):
 
   print("======= decode starting ===")
   dec_times = []
+  if not profiling_prefill and profiling_output:
+    jax.profiler.start_trace(profiling_output)
   for i in range(10):
     start = time.perf_counter()
     # pylint: disable-next=all
