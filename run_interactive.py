@@ -195,5 +195,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
+  start_time = time.time()
   os.environ["TF_CPP_MIN_LOG_LEVEL"] = "0"
   app.run(main)
+  print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
