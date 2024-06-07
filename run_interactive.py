@@ -188,11 +188,13 @@ def main(argv):
       ):
         break
 
-    print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
-    print("---- All output tokens.")
-    print(sampled_tokens_list)
-    print("---- All output text.")
-    print(tokenizer.decode(sampled_tokens_list))
+    # print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
+    # print("---- All output tokens.")
+    # print(sampled_tokens_list)
+    # print("---- All output text.")
+    print("---- All output text.", tokenizer.decode(sampled_tokens_list))
+
+  print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.stop_trace()
