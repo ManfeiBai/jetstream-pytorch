@@ -113,7 +113,7 @@ def create_engine():
 # pylint: disable-next=all
 def main(argv):
 
-  main_start_time = time.time()
+  # main_start_time = time.time()
   engine = create_engine()
 
   start = time.perf_counter()
@@ -128,6 +128,8 @@ def main(argv):
     jax.profiler.start_trace(_PROFILING_OUTPUT.value)
 
   decode_state = engine.init_decode_state()
+
+  main_start_time = time.time()
   prompts: List[str] = [
       "I believe the meaning of life is",
       "To add an element to an ArrayList of a specific class type in Java",
