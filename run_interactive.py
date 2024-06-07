@@ -113,6 +113,7 @@ def create_engine():
 # pylint: disable-next=all
 def main(argv):
 
+  main_start_time = time.time()
   engine = create_engine()
 
   start = time.perf_counter()
@@ -185,6 +186,7 @@ def main(argv):
       ):
         break
 
+    print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
     print("---- All output tokens.")
     print(sampled_tokens_list)
     print("---- All output text.")
