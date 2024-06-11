@@ -194,7 +194,7 @@ def main(argv):
     # print("---- All output text.")
     print("---- All output text.", tokenizer.decode(sampled_tokens_list))
 
-  print("--- finish all requests used : %s seconds ---" % (time.time() - start_time))
+  print("--- finish all prompt requests used : %s seconds ---" % (time.time() - main_start_time))
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.stop_trace()
