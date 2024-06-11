@@ -162,8 +162,8 @@ def main(argv):
     slot = random.randint(0, _BATCH_SIZE.value - 1)
     tokens, true_length = tokenizer.encode(prompt)
 
-    print(f"---- Input prompts are: {prompt}")
-    print(f"---- Encoded tokens are: {tokens}")
+    # print(f"---- Input prompts are: {prompt}")
+    # print(f"---- Encoded tokens are: {tokens}")
 
     # pylint: disable-next=all
     prefill_result = engine.prefill(
@@ -172,7 +172,7 @@ def main(argv):
     # pylint: disable-next=all
     decode_state = engine.insert(prefill_result, decode_state, slot=slot)
     sampled_tokens_list = []
-    print(f"---- Streaming decode started on #slot{slot}.")
+    # print(f"---- Streaming decode started on #slot{slot}.")
     complete = np.zeros((1,), dtype=np.bool_)
     while True:
       decode_state, result_tokens = engine.generate(params, decode_state)
@@ -192,7 +192,7 @@ def main(argv):
     # print("---- All output tokens.")
     # print(sampled_tokens_list)
     # print("---- All output text.")
-    print("---- All output text.", tokenizer.decode(sampled_tokens_list))
+    # print("---- All output text.", tokenizer.decode(sampled_tokens_list))
 
   print("--- finish all prompt requests used : %s seconds ---" % (time.time() - main_start_time))
 
