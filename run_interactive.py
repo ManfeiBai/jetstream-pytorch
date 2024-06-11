@@ -122,7 +122,7 @@ def main(argv):
 
   metadata = engine.get_tokenizer()
   tokenizer = engine.build_tokenizer(metadata)
-  max_output_length = 1024
+  max_output_length = 20
 
   if _PROFILING_OUTPUT.value:
     jax.profiler.start_trace(_PROFILING_OUTPUT.value)
