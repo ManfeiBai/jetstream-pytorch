@@ -95,7 +95,7 @@ def create_engine():
       devices=devices,
       tokenizer_path=_TOKENIZER_PATH.value,
       ckpt_path=_CKPT_PATH.value,
-      bf16_enable=False,
+      bf16_enable=True,
       param_size=_SIZE.value,
       context_length=_CONTEXT_LENGTH.value,
       batch_size=_BATCH_SIZE.value,
