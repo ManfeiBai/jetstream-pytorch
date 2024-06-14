@@ -109,11 +109,14 @@ def create_engine():
   print("Initialize engine", time.perf_counter() - start)
   return engine
 
+
 def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_decode_token_ms):
+  # import pdb; pdb.set_trace()
   def next_power_of_2(x):
     return 1 if x == 0 else 2 ** (x - 1).bit_length()
 
   def tokens_in_input_str(s):
+    # import pdb; pdb.set_trace()
     return_val = int(1.3 * len(s.split()))
     return return_val
 
@@ -123,11 +126,11 @@ def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_de
   # with open(sharegpt_path, "r", encoding="utf-8") as f:
   #   loaded_share_gpt = json.load(f)
   # for example in prompts:
-  for i in raneg(len(prompts)):
+  for i in range(len(prompts)):
     # if len(example["conversations"]) < 2:
     #   continue
     input_tokens = tokens_in_input_str(prompts[i])
-    output_tokens = tokens_in_input_str(replys[i])
+    output_tokens = tokens_in_input_str(replys[i].text)
     convo_numbers.append((input_tokens, output_tokens))
 
   num_convos = len(convo_numbers)
@@ -146,11 +149,15 @@ def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_de
   total_prefill_system_ms = 0
   total_generate_system_ms = 0
 
+  import pdb; pdb.set_trace()
+  iteri = 0
   for convo in kept_convos:
     input_tok, output_tok = convo
-    bucket = max(128, next_power_of_2(input_tok))
+    # bucket = max(128, next_power_of_2(input_tok))
+    bucket = max(7, next_power_of_2(input_tok))
     generate_system_ms = output_tok * system_time_per_decode_token_ms
-    prefill_system_ms = prefill_bucket_size_to_ms[bucket]
+    prefill_system_ms = prefill_bucket_size_to_ms[iteri] # [bucket]
+    iteri += 1
 
     print(
         f"{convo=} {bucket=}, {prefill_system_ms=:.2f}, {generate_system_ms=:.2f}"
@@ -177,7 +184,7 @@ def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_de
   )
 
   idealized_prefill_sec = (
-      1.1 * input_tokens / 1024 * prefill_bucket_size_to_ms[1024] / 1000
+      1.1 * input_tokens / 1024 * 60.28 / 1000 # 1024: 60.28,
   )
 
   prefill_savings_sec = total_prefill_sec - idealized_prefill_sec
@@ -309,7 +316,8 @@ def main(argv):
   print("--- finish all prompt requests used : %s seconds ---" % (time.time() - main_start_time))
   print("decode", sum(dec_times) / 10)
 
-  prefill_times_ms = {k: v * 1000 for k, v in prefill_times.items()}
+  # prefill_times_ms = {k: v * 1000 for k, v in prefill_times.items()}
+  prefill_times_ms = [v for k, v in prefill_times.items()]
   decode_time_ms = sum(dec_times) * 1000 / 10 / 1 # FLAGS.batch_size
 
   # call fun
