@@ -150,7 +150,7 @@ def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_de
   total_prefill_system_ms = 0
   total_generate_system_ms = 0
 
-  import pdb; pdb.set_trace()
+  # import pdb; pdb.set_trace()
   iteri = 0
   for convo in kept_convos:
     input_tok, output_tok = convo
