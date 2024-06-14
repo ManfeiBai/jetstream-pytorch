@@ -130,8 +130,8 @@ def do_simulation(prompts, replys, prefill_bucket_size_to_ms, system_time_per_de
     # if len(example["conversations"]) < 2:
     #   continue
     input_tokens = tokens_in_input_str(prompts[i])
-    import pdb; pdb.set_trace()
-    output_tokens = tokens_in_input_str(replys[i].text)
+    # import pdb; pdb.set_trace()
+    output_tokens = tokens_in_input_str(replys[i]) # .text)
     convo_numbers.append((input_tokens, output_tokens))
 
   num_convos = len(convo_numbers)
